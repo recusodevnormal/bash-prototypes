@@ -1,6 +1,3 @@
-# Bashmon: TUI Monster Tamer
-
-```bash
 #!/usr/bin/env bash
 # =============================================================================
 # BASHMON: TUI Monster Tamer

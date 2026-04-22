@@ -35,3 +35,10 @@ ex ()
     echo "'$1' is not a valid file"
   fi
 }
+
+# Call the function if a file argument is provided
+if [ -n "$1" ]; then
+    ex "$1"
+else
+    echo "Usage: $0 <file_to_extract>"
+fi

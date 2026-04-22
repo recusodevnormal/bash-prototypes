@@ -1,7 +1,3 @@
-# Markov Chain Personality Mimic
-## A standalone Bash script with no external dependencies
-
-```bash
 #!/usr/bin/env bash
 # =============================================================================
 # markov_mimic.sh - Static Markov Chain "Personality" Mimic

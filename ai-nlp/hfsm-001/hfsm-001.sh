@@ -1,4 +1,4 @@
-#!/bin/bin/env bash
+#!/usr/bin/env bash
 
 # ==============================================================================
 # Hierarchical Finite State Machine (HFSM) - Interactive Terminal UI
