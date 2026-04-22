@@ -1,0 +1,53 @@
+#!/bin/bash
+# Service: network
+# depends: 
+# ready: cmd:"ip link show lo | grep -q UP"
+# ready_timeout: 5
+# Minimal network bring-up. Works fully offline — loopback is always available.
+# If an ethernet interface exists it is brought up; DHCP is attempted but never fatal.
+
+iface="${NET_IFACE:-eth0}"
+
+log() {
+    echo "[network] $*"
+}
+
+start() {
+    # Loopback is essential and always works offline
+    log "Bringing up loopback..."
+    ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null || true
+    ip addr add 127.0.0.1/8 dev lo 2>/dev/null || ifconfig lo 127.0.0.1 2>/dev/null || true
+
+    # Try to bring up the primary interface if it exists
+    if ip link show "$iface" >/dev/null 2>&1 || ifconfig "$iface" >/dev/null 2>&1; then
+        log "Bringing up $iface..."
+        ip link set "$iface" up 2>/dev/null || ifconfig "$iface" up 2>/dev/null || log "Failed to bring up $iface"
+
+        # Attempt DHCP — purely best-effort, never fatal
+        if command -v udhcpc >/dev/null 2>&1; then
+            udhcpc -i "$iface" -f -q -n 2>/dev/null && log "DHCP lease obtained on $iface" || log "DHCP unavailable (offline mode)"
+        elif command -v dhclient >/dev/null 2>&1; then
+            dhclient -v "$iface" 2>/dev/null && log "DHCP lease obtained on $iface" || log "DHCP unavailable (offline mode)"
+        else
+            log "No DHCP client; running in offline mode"
+        fi
+    else
+        log "No $iface interface found; running in offline mode"
+    fi
+
+    log "Network ready (loopback available)"
+}
+
+stop() {
+    log "Taking down network interfaces..."
+    ip link set "$iface" down 2>/dev/null || ifconfig "$iface" down 2>/dev/null || true
+}
+
+# If sourced/executed directly, run start
+if [[ "$(basename "$0")" == "network" ]]; then
+    case "${1:-start}" in
+        start) start ;;
+        stop) stop ;;
+        *) echo "Usage: $0 {start|stop}" ;;
+    esac
+fi

@@ -1,0 +1,422 @@
+#!/bin/bash
+# Minimal PID 1 init for initramfs / direct boot
+# Supervises services written in Bash. Reaps zombies, restarts services,
+# handles SIGTERM gracefully, and supports simple dependency ordering.
+
+# Do NOT use set -e in PID 1 — a single failed command would kernel-panic the box.
+# --- Configuration ---
+# Service directory (relative to root)
+SVC_DIR="${SVC_DIR:-/services}"
+# Run directory for state
+RUN_DIR="/run/mininit"
+# Max restart attempts before giving up on a service
+MAX_RESTARTS=10
+# Backoff base in seconds
+BACKOFF_BASE=1
+# cgroup base path
+CGROUP_BASE="/sys/fs/cgroup/mininit"
+# virtiofs / 9p mount tag for persistence
+PERSIST_TAG="persist"
+
+# --- Traps / Signals ---
+SHUTDOWN=0
+
+trap 'echo "[init] SIGTERM received, initiating shutdown..."; SHUTDOWN=1' TERM
+trap 'echo "[init] SIGINT received, initiating shutdown..."; SHUTDOWN=1' INT
+
+# --- Basic mounts (if running as initramfs or real init) ---
+mount_basic() {
+    mkdir -p /proc /sys /dev /run /tmp /var /etc
+    mount -t proc proc /proc 2>/dev/null || true
+    mount -t sysfs sysfs /sys 2>/dev/null || true
+    mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+    mount -t tmpfs tmpfs /run 2>/dev/null || true
+    mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+    mkdir -p /dev/pts
+    mount -t devpts devpts /dev/pts 2>/dev/null || true
+}
+
+# --- Logging helper ---
+log() {
+    echo "[init] $*"
+}
+
+# --- Header parser ---
+get_svc_header() {
+    local svc="$1" key="$2"
+    sed -n "s/^# ${key}: \(.*\)/\1/p" "$svc" 2>/dev/null
+}
+
+# --- Persistence layer ---
+mount_persistence() {
+    mkdir -p /persist
+    if mount -t virtiofs "$PERSIST_TAG" /persist 2>/dev/null; then
+        log "Mounted virtiofs persist share"
+    elif mount -t 9p -o trans=virtio,version=9p2000.L "$PERSIST_TAG" /persist 2>/dev/null; then
+        log "Mounted 9p persist share"
+    else
+        log "No persistence share available (pass -virtfs in QEMU to enable)"
+        return
+    fi
+    for dir in var etc root; do
+        mkdir -p "/persist/$dir" "/$dir"
+        mount --bind "/persist/$dir" "/$dir" 2>/dev/null || true
+    done
+}
+
+# --- cgroups v2 ---
+init_cgroups() {
+    if ! mountpoint -q /sys/fs/cgroup 2>/dev/null; then
+        mkdir -p /sys/fs/cgroup
+        mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+    fi
+    if [[ -f /sys/fs/cgroup/cgroup.subtree_control ]]; then
+        echo "+cpu +memory" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+    fi
+    mkdir -p "$CGROUP_BASE"
+}
+
+setup_cgroup_limits() {
+    local svc="$1" name="$2"
+    local cgroup_path="$CGROUP_BASE/$name"
+    mkdir -p "$cgroup_path"
+    local cpu_max
+    cpu_max=$(get_svc_header "$svc" "cgroup.cpu.max")
+    [[ -n "$cpu_max" ]] && echo "$cpu_max" > "$cgroup_path/cpu.max" 2>/dev/null || true
+    local mem_max
+    mem_max=$(get_svc_header "$svc" "cgroup.memory.max")
+    [[ -n "$mem_max" ]] && echo "$mem_max" > "$cgroup_path/memory.max" 2>/dev/null || true
+}
+
+assign_cgroup() {
+    local name="$1" pid="$2"
+    local cgroup_path="$CGROUP_BASE/$name"
+    mkdir -p "$cgroup_path"
+    echo "$pid" > "$cgroup_path/cgroup.procs" 2>/dev/null || true
+}
+
+teardown_cgroup() {
+    local name="$1"
+    rmdir "$CGROUP_BASE/$name" 2>/dev/null || true
+}
+
+# --- Namespace isolation ---
+isolate_flags() {
+    local svc="$1"
+    get_svc_header "$svc" "isolate"
+}
+
+build_unshare_cmd() {
+    local flags="$1"
+    [[ -z "$flags" ]] && return
+    local args=""
+    for f in $(echo "$flags" | tr ',' ' '); do
+        case "$f" in
+            pid) args="$args -p -f" ;;
+            mount) args="$args -m" ;;
+            uts) args="$args -u" ;;
+            ipc) args="$args -i" ;;
+            net) args="$args -n" ;;
+            user) args="$args -U -r" ;;
+        esac
+    done
+    [[ -n "$args" ]] && echo "unshare $args"
+}
+
+# --- Readiness probes ---
+check_ready() {
+    local spec="$1"
+    local type="${spec%%:*}"
+    local target="${spec#*:}"
+    case "$type" in
+        tcp)
+            ss -tln 2>/dev/null | grep -q ":${target}[[:space:]]" || nc -z 127.0.0.1 "$target" 2>/dev/null
+            ;;
+        file)
+            [[ -e "$target" ]]
+            ;;
+        unix)
+            [[ -S "$target" ]]
+            ;;
+        sleep)
+            sleep "$target"
+            true
+            ;;
+        cmd)
+            eval "$target"
+            ;;
+        *)
+            true
+            ;;
+    esac
+}
+
+wait_for_ready() {
+    local svc="$1" name="$2"
+    local ready_spec
+    ready_spec=$(get_svc_header "$svc" "ready")
+    [[ -z "$ready_spec" ]] && return 0
+    local timeout
+    timeout=$(get_svc_header "$svc" "ready_timeout")
+    timeout=${timeout:-10}
+    log "Waiting for $name readiness (timeout: ${timeout}s)..."
+    local elapsed=0
+    while [[ "$elapsed" -lt "$timeout" ]]; do
+        if check_ready "$ready_spec"; then
+            log "Service $name is ready"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    log "WARNING: Service $name readiness probe timed out after ${timeout}s"
+    return 1
+}
+
+# --- Service helpers ---
+mkdir -p "$RUN_DIR"
+
+# Start a single service script in the background
+# Args: service_path
+start_service() {
+    local svc="$1"
+    local name
+    name=$(basename "$svc")
+    local pidfile="$RUN_DIR/${name}.pid"
+    local logfile="$RUN_DIR/${name}.log"
+    local countfile="$RUN_DIR/${name}.count"
+
+    if [[ -f "$pidfile" ]]; then
+        local oldpid
+        oldpid=$(cat "$pidfile" 2>/dev/null)
+        if kill -0 "$oldpid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    local count=0
+    if [[ -f "$countfile" ]]; then
+        count=$(cat "$countfile")
+    fi
+
+    if [[ "$count" -ge "$MAX_RESTARTS" ]]; then
+        log "Service $name has exceeded max restarts ($MAX_RESTARTS). Not restarting."
+        return 1
+    fi
+
+    # cgroups limits
+    setup_cgroup_limits "$svc" "$name"
+
+    # namespace isolation
+    local flags
+    flags=$(isolate_flags "$svc")
+    local unshare_cmd
+    unshare_cmd=$(build_unshare_cmd "$flags")
+
+    log "Starting service: $name (restart count: $count)${flags:+ [isolate: $flags]}"
+
+    if [[ -n "$unshare_cmd" ]]; then
+        $unshare_cmd bash -c "cd /; exec bash \"$svc\"" >>"$logfile" 2>&1 &
+    else
+        (
+            exec >>"$logfile" 2>&1
+            bash "$svc"
+        ) &
+    fi
+    local pid=$!
+    echo "$pid" > "$pidfile"
+    echo "$((count + 1))" > "$countfile"
+
+    assign_cgroup "$name" "$pid"
+
+    # Wait for service to signal readiness before returning
+    wait_for_ready "$svc" "$name"
+}
+
+# Stop a single service
+stop_service() {
+    local svc="$1"
+    local name
+    name=$(basename "$svc")
+    local pidfile="$RUN_DIR/${name}.pid"
+
+    if [[ -f "$pidfile" ]]; then
+        local pid
+        pid=$(cat "$pidfile" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            log "Stopping service: $name (pid $pid)"
+            bash "$svc" stop >/dev/null 2>&1 || true
+            kill -TERM "$pid" 2>/dev/null || true
+            local waited=0
+            while kill -0 "$pid" 2>/dev/null && [[ "$waited" -lt 50 ]]; do
+                sleep 0.1
+                waited=$((waited + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                log "Service $name did not stop gracefully, sending KILL"
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        fi
+    fi
+    rm -f "$pidfile"
+    teardown_cgroup "$name"
+}
+
+# Gather list of enabled services in dependency order
+get_services() {
+    local svc_dir="${1:-$SVC_DIR}"
+    if [[ ! -d "$svc_dir" ]]; then
+        return
+    fi
+
+    local svcs=()
+    local ordered=()
+
+    for f in "$svc_dir"/*; do
+        [[ -f "$f" ]] || continue
+        # Skip files starting with underscore or disabled files
+        local base
+        base=$(basename "$f")
+        [[ "$base" == _* ]] && continue
+        [[ "$base" == *.disabled ]] && continue
+        svcs+=("$f")
+    done
+
+    # Simple dependency sort: files may declare '# depends: svc1 svc2'
+    # We'll do a naive topological sort
+    local remaining=("${svcs[@]}")
+    local changed=1
+    while [[ "$changed" -eq 1 ]] && [[ "${#remaining[@]}" -gt 0 ]]; do
+        changed=0
+        local next_remaining=()
+        for f in "${remaining[@]}"; do
+            local deps
+            deps=$(sed -n 's/^# depends: \(.*\)/\1/p' "$f" 2>/dev/null)
+            local ready=1
+            for d in $deps; do
+                local found=0
+                for o in "${ordered[@]}"; do
+                    [[ "$(basename "$o")" == "$d" ]] && found=1 && break
+                done
+                if [[ "$found" -eq 0 ]]; then
+                    ready=0
+                    break
+                fi
+            done
+            if [[ "$ready" -eq 1 ]]; then
+                ordered+=("$f")
+                changed=1
+            else
+                next_remaining+=("$f")
+            fi
+        done
+        remaining=("${next_remaining[@]}")
+    done
+
+    if [[ "${#remaining[@]}" -gt 0 ]]; then
+        log "WARNING: dependency cycle or missing deps for: ${remaining[*]}"
+        ordered+=("${remaining[@]}")
+    fi
+
+    printf '%s\n' "${ordered[@]}"
+}
+
+# --- Supervisor loop ---
+run_supervisor() {
+    local svcs
+    svcs=$(get_services)
+
+    if [[ -z "$svcs" ]]; then
+        log "No services found in $SVC_DIR"
+    else
+        for svc in $svcs; do
+            start_service "$svc"
+        done
+    fi
+
+    log "Supervisor loop running (PID $$)"
+
+    while [[ "$SHUTDOWN" -eq 0 ]]; do
+        # Reap zombie children via /proc
+        for p in /proc/[0-9]*; do
+            [[ -d "$p" ]] || continue
+            local stat_file="$p/stat"
+            [[ -f "$stat_file" ]] || continue
+            local ppid
+            ppid=$(awk '{print $4}' "$stat_file" 2>/dev/null)
+            if [[ "$ppid" == "1" ]]; then
+                local state
+                state=$(awk '{print $3}' "$stat_file" 2>/dev/null)
+                if [[ "$state" == "Z" ]]; then
+                    local cpid
+                    cpid=$(basename "$p")
+                    wait "$cpid" 2>/dev/null || true
+                fi
+            fi
+        done
+
+        # Check service health / restart
+        if [[ -n "$svcs" ]]; then
+            for svc in $svcs; do
+                local name
+                name=$(basename "$svc")
+                local pidfile="$RUN_DIR/${name}.pid"
+                if [[ -f "$pidfile" ]]; then
+                    local pid
+                    pid=$(cat "$pidfile" 2>/dev/null)
+                    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+                        log "Service $name exited. Restarting..."
+                        rm -f "$pidfile"
+                        # Backoff
+                        local countfile="$RUN_DIR/${name}.count"
+                        local count=0
+                        [[ -f "$countfile" ]] && count=$(cat "$countfile")
+                        local delay=$((BACKOFF_BASE * count))
+                        [[ "$delay" -gt 30 ]] && delay=30
+                        log "Waiting ${delay}s before restart of $name"
+                        sleep "$delay"
+                        start_service "$svc"
+                    fi
+                fi
+            done
+        fi
+
+        sleep 1
+    done
+
+    # Shutdown
+    log "Shutting down services..."
+    if [[ -n "$svcs" ]]; then
+        # Stop in reverse order
+        local rev=()
+        for svc in $svcs; do
+            rev=("$svc" "${rev[@]}")
+        done
+        for svc in "${rev[@]}"; do
+            stop_service "$svc"
+        done
+    fi
+
+    log "All services stopped. Halting."
+}
+
+# --- Main entrypoint ---
+main() {
+    log "Minimal Bash init starting (PID $$)"
+    mount_basic
+    mount_persistence
+    init_cgroups
+    run_supervisor
+
+    # If we get here after shutdown, either halt or reboot
+    sync
+    poweroff -f 2>/dev/null || reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
+}
+
+# If executed directly (e.g. in initramfs), run main
+if [[ "$$" -eq 1 ]] || [[ "$(cat /proc/1/stat 2>/dev/null | awk '{print $1}')" == "$$" ]]; then
+    main "$@"
+else
+    # For testing: allow sourcing or direct invocation
+    main "$@"
+fi

@@ -1,0 +1,45 @@
+#!/bin/bash
+# Service: httpd
+# depends: network logger
+# ready: tcp:8080
+# ready_timeout: 5
+# cgroup.memory.max: 32M
+# Minimal HTTP server using Bash + netcat (or busybox nc)
+
+PORT="${HTTP_PORT:-8080}"
+DOC_ROOT="${HTTP_ROOT:-/var/www}"
+
+log() {
+    echo "[httpd] $*"
+}
+
+start() {
+    mkdir -p "$DOC_ROOT"
+    # Create a simple index if none exists
+    if [[ ! -f "$DOC_ROOT/index.html" ]]; then
+        cat > "$DOC_ROOT/index.html" <<'EOF'
+<!DOCTYPE html>
+<html><head><title>Minimal OS</title></head>
+<body><h1>It works!</h1><p>Running on Bash PID 1.</p></body></html>
+EOF
+    fi
+
+    log "Starting minimal HTTP server on port $PORT"
+    while true; do
+        # BusyBox nc -lk or GNU nc -lk depending on what's available
+        { echo -e "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"; cat "$DOC_ROOT/index.html"; } | nc -l -p "$PORT" 2>/dev/null || true
+    done
+}
+
+stop() {
+    log "Stopping httpd..."
+    :
+}
+
+if [[ "$(basename "$0")" == "httpd" ]]; then
+    case "${1:-start}" in
+        start) start ;;
+        stop) stop ;;
+        *) echo "Usage: $0 {start|stop}" ;;
+    esac
+fi

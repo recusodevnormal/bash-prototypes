@@ -1,0 +1,45 @@
+#!/bin/bash
+# Service: logger
+# depends: network
+# ready: file:/var/log/messages
+# ready_timeout: 3
+# Minimal syslog-like logger: reads from a named pipe and writes to /var/log/messages
+
+LOG_FILE="/var/log/messages"
+PIPE="/var/log/logpipe"
+
+log() {
+    echo "[logger] $*"
+}
+
+start() {
+    mkdir -p "$(dirname "$LOG_FILE")"
+    [[ -p "$PIPE" ]] || mkfifo "$PIPE" 2>/dev/null || true
+
+    log "Starting logger. Writing to $LOG_FILE"
+    # If the pipe exists, tail it; otherwise just touch the log and sleep
+    if [[ -p "$PIPE" ]]; then
+        while true; do
+            cat "$PIPE" >> "$LOG_FILE" 2>/dev/null || sleep 1
+        done
+    else
+        touch "$LOG_FILE"
+        while true; do
+            sleep 60
+        done
+    fi
+}
+
+stop() {
+    log "Stopping logger..."
+    # Nothing persistent to kill; the supervisor kills our PID
+    :
+}
+
+if [[ "$(basename "$0")" == "logger" ]]; then
+    case "${1:-start}" in
+        start) start ;;
+        stop) stop ;;
+        *) echo "Usage: $0 {start|stop}" ;;
+    esac
+fi
