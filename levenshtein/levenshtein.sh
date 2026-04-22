@@ -200,6 +200,67 @@ load_dictionary() {
 }
 
 # ---------------------------------------------------------------------------
+# Soundex phonetic encoding (simplified American Soundex)
+# Returns a 4-character code representing the sound of the word
+# ---------------------------------------------------------------------------
+soundex() {
+    local word="${1,,}"  # lowercase
+    word=$(echo "$word" | sed 's/[^a-z]//g')  # remove non-letters
+    [[ -z "$word" ]] && { printf '0000'; return; }
+    
+    # Keep first letter
+    local first="${word:0:1}"
+    local rest="${word:1}"
+    
+    # Convert letters to numbers per Soundex rules
+    # b,p,f,v -> 1; c,s,g,j,k,q,x,z -> 2; d,t -> 3; l -> 4; m,n -> 5; r -> 6
+    local coded=$(echo "$rest" | sed \
+        -e 's/[aeiouhwy]//g' \
+        -e 's/[bfpv]/1/g' \
+        -e 's/[cskgjxqz]/2/g' \
+        -e 's/[dt]/3/g' \
+        -e 's/[l]/4/g' \
+        -e 's/[mn]/5/g' \
+        -e 's/[r]/6/g')
+    
+    # Remove consecutive duplicates
+    local prev=""
+    local result=""
+    for ((i=0; i<${#coded}; i++)); do
+        local ch="${coded:$i:1}"
+        [[ "$ch" == "$prev" ]] && continue
+        result="${result}${ch}"
+        prev="$ch"
+    done
+    
+    # Pad or truncate to 3 digits, prepend first letter
+    result="${first}${result}"
+    result=$(echo "$result" | sed 's/^[a-z]//' | head -c 3)
+    while [[ ${#result} -lt 3 ]]; do
+        result="${result}0"
+    done
+    
+    printf '%s%s' "$first" "$result"
+}
+
+# Calculate phonetic distance between two words (0 = same soundex, 1 = different)
+phonetic_distance() {
+    local a="$1"
+    local b="$2"
+    local sx_a=$(soundex "$a")
+    local sx_b=$(soundex "$b")
+    [[ "$sx_a" == "$sx_b" ]] && { printf '0'; return; }
+    # Count character differences in soundex codes
+    local diff=0
+    for ((i=0; i<4; i++)); do
+        local ca="${sx_a:$i:1}"
+        local cb="${sx_b:$i:1}"
+        [[ "$ca" != "$cb" ]] && ((diff++))
+    done
+    printf '%d' "$diff"
+}
+
+# ---------------------------------------------------------------------------
 # levenshtein <string_a> <string_b>
 #
 # Prints the Levenshtein edit distance between the two strings.
@@ -284,16 +345,18 @@ levenshtein() {
 # find_suggestions <query>
 #
 # Iterates over DICTIONARY[], computes Levenshtein distance for each word,
-# keeps entries with distance <= MAX_DISTANCE, then prints them sorted by
-# ascending distance (closest match first).
+# keeps entries with distance <= MAX_DISTANCE OR phonetically similar words,
+# then prints them sorted by ascending distance (closest match first).
+#
+# Phonetic bonus: if words sound alike (Soundex match), reduce effective distance
 #
 # Output format (one line per candidate):
-#   <distance> <word>
+#   <distance> <word> [<phonetic_match>]
 # ---------------------------------------------------------------------------
 find_suggestions() {
     local query="${1,,}"      # normalise query to lower-case
     local -a results=()
-    local word dist
+    local word dist phonetic_adj is_phonetic
 
     for word in "${DICTIONARY[@]}"; do
         # Exact match — distance 0
@@ -303,9 +366,19 @@ find_suggestions() {
         fi
 
         dist=$(levenshtein "$query" "$word")
+        
+        # Check phonetic similarity (Soundex)
+        is_phonetic=""
+        local pdist=$(phonetic_distance "$query" "$word")
+        if (( pdist == 0 )); then
+            # Same soundex - boost significantly (reduce effective distance)
+            phonetic_adj=$(( dist > 1 ? dist - 2 : 0 ))
+            is_phonetic="*"
+            dist=$phonetic_adj
+        fi
 
         if (( dist <= MAX_DISTANCE )); then
-            results+=("${dist} ${word}")
+            results+=("${dist} ${word}${is_phonetic}")
         fi
     done
 
@@ -355,13 +428,20 @@ display_results() {
     fi
 
     # Table header
-    printf '  %s%-6s  %-24s  %s%s\n' \
+    printf '  %s%-6s  %-26s  %s%s\n' \
         "${BOLD}" "DIST" "SUGGESTION" "CLOSENESS" "${RESET}"
-    printf '  %s%s%s\n' "${DIM}" "$(printf '─%.0s' $(seq 1 52))" "${RESET}"
+    printf '  %s%s%s\n' "${DIM}" "$(printf '─%.0s' $(seq 1 54))" "${RESET}"
 
     # Print up to MAX_SUGGESTIONS rows
     local count=0
     while IFS=' ' read -r dist word && (( count < MAX_SUGGESTIONS )); do
+
+        # Check for phonetic match indicator (* suffix)
+        local phonetic_mark=""
+        if [[ "$word" == *\* ]]; then
+            word="${word%\*}"  # Remove asterisk
+            phonetic_mark="${MAGENTA}♪${RESET} "
+        fi
 
         # Colour by distance
         local colour
@@ -380,7 +460,7 @@ display_results() {
 
         printf '  %s%-6d%s  %s%-24s%s  %b\n' \
             "${colour}" "$dist" "${RESET}" \
-            "${colour}${BOLD}" "$word" "${RESET}" \
+            "${colour}${BOLD}" "${phonetic_mark}${word}" "${RESET}" \
             "$bar"
 
         (( count++ ))

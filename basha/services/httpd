@@ -4,13 +4,158 @@
 # ready: tcp:8080
 # ready_timeout: 5
 # cgroup.memory.max: 32M
-# Minimal HTTP server using Bash + netcat (or busybox nc)
+# Enhanced HTTP server with health check endpoint
 
 PORT="${HTTP_PORT:-8080}"
 DOC_ROOT="${HTTP_ROOT:-/var/www}"
+RUN_DIR="/run/mininit"
+START_TIME=$(date +%s)
 
 log() {
     echo "[httpd] $*"
+}
+
+# Get system uptime in seconds
+get_uptime() {
+    awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0"
+}
+
+# Get memory info in KB
+get_mem_info() {
+    local key="$1"
+    awk -v k="$key" '$1 == k ":" {print $2}' /proc/meminfo 2>/dev/null || echo "0"
+}
+
+# Calculate memory usage percentage
+get_mem_usage() {
+    local total=$(get_mem_info "MemTotal")
+    local available=$(get_mem_info "MemAvailable")
+    if [[ "$total" -gt 0 ]]; then
+        echo "$(( 100 - (available * 100 / total) ))"
+    else
+        echo "0"
+    fi
+}
+
+# Get service status from run directory
+get_service_status() {
+    local svc="$1"
+    local pidfile="$RUN_DIR/${svc}.pid"
+    local countfile="$RUN_DIR/${svc}.count"
+    local status="stopped"
+    local restarts="0"
+    
+    if [[ -f "$pidfile" ]]; then
+        local pid=$(cat "$pidfile" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            status="running"
+        else
+            status="crashed"
+        fi
+    fi
+    
+    if [[ -f "$countfile" ]]; then
+        restarts=$(cat "$countfile" 2>/dev/null)
+    fi
+    
+    echo "{\"name\":\"$svc\",\"status\":\"$status\",\"restarts\":$restarts}"
+}
+
+# Generate JSON health response
+generate_health_json() {
+    local uptime=$(get_uptime)
+    local mem_total=$(get_mem_info "MemTotal")
+    local mem_free=$(get_mem_info "MemFree")
+    local mem_usage=$(get_mem_usage)
+    local loadavg=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null | tr ' ' ',' || echo "0,0,0")
+    
+    # Build services array
+    local services=""
+    for pidfile in "$RUN_DIR"/*.pid 2>/dev/null; do
+        [[ -f "$pidfile" ]] || continue
+        local svc=$(basename "$pidfile" .pid)
+        [[ "$svc" == "httpd" ]] && continue
+        local svc_json=$(get_service_status "$svc")
+        services="${services}${services:+,}$svc_json"
+    done
+    
+    cat <<EOF
+{
+  "status": "healthy",
+  "timestamp": $(date +%s),
+  "uptime_seconds": $uptime,
+  "memory": {
+    "total_kb": $mem_total,
+    "free_kb": $mem_free,
+    "usage_percent": $mem_usage
+  },
+  "load_average": [$loadavg],
+  "services": [$services]
+}
+EOF
+}
+
+# Handle HTTP request and route to appropriate handler
+handle_request() {
+    local request_line=""
+    local path="/"
+    
+    # Read first line to get the path
+    read -r request_line
+    if [[ "$request_line" =~ ^GET[[:space:]]+(/[^[:space:]]*) ]]; then
+        path="${BASH_REMATCH[1]}"
+    fi
+    
+    # Consume remaining headers
+    while read -r line; do
+        [[ "$line" == $'\r' ]] && break
+        [[ -z "$line" ]] && break
+    done
+    
+    # Route based on path
+    case "$path" in
+        "/health")
+            local body=$(generate_health_json)
+            local len=${#body}
+            echo -e "HTTP/1.1 200 OK\r"
+            echo -e "Content-Type: application/json\r"
+            echo -e "Content-Length: $len\r"
+            echo -e "Connection: close\r"
+            echo -e "\r"
+            echo "$body"
+            ;;
+        "/")
+            if [[ -f "$DOC_ROOT/index.html" ]]; then
+                local body=$(cat "$DOC_ROOT/index.html")
+                local len=${#body}
+                echo -e "HTTP/1.1 200 OK\r"
+                echo -e "Content-Type: text/html\r"
+                echo -e "Content-Length: $len\r"
+                echo -e "Connection: close\r"
+                echo -e "\r"
+                echo "$body"
+            else
+                local body="<h1>It works!</h1><p>Running on Bash PID 1.</p><p><a href=\"/health\">Health Status</a></p>"
+                local len=${#body}
+                echo -e "HTTP/1.1 200 OK\r"
+                echo -e "Content-Type: text/html\r"
+                echo -e "Content-Length: $len\r"
+                echo -e "Connection: close\r"
+                echo -e "\r"
+                echo "$body"
+            fi
+            ;;
+        *)
+            local body='{"error":"Not Found"}'
+            local len=${#body}
+            echo -e "HTTP/1.1 404 Not Found\r"
+            echo -e "Content-Type: application/json\r"
+            echo -e "Content-Length: $len\r"
+            echo -e "Connection: close\r"
+            echo -e "\r"
+            echo "$body"
+            ;;
+    esac
 }
 
 start() {
@@ -20,14 +165,24 @@ start() {
         cat > "$DOC_ROOT/index.html" <<'EOF'
 <!DOCTYPE html>
 <html><head><title>Minimal OS</title></head>
-<body><h1>It works!</h1><p>Running on Bash PID 1.</p></body></html>
+<body><h1>It works!</h1><p>Running on Bash PID 1.</p><p><a href="/health">Health Status (JSON)</a></p></body></html>
 EOF
     fi
 
-    log "Starting minimal HTTP server on port $PORT"
+    log "Starting HTTP server on port $PORT (endpoints: /, /health)"
     while true; do
-        # BusyBox nc -lk or GNU nc -lk depending on what's available
-        { echo -e "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"; cat "$DOC_ROOT/index.html"; } | nc -l -p "$PORT" 2>/dev/null || true
+        # Use coprocess to handle request/response properly
+        coproc nc_handler { nc -l -p "$PORT" 2>/dev/null; }
+        
+        # Process the request
+        handle_request <&${nc_handler[0]} >&${nc_handler[1]}
+        
+        # Clean up
+        kill "$nc_handler_PID" 2>/dev/null || true
+        wait "$nc_handler_PID" 2>/dev/null || true
+        
+        # Small delay to prevent tight loop on errors
+        sleep 0.01
     done
 }
 

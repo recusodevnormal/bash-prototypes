@@ -73,6 +73,7 @@ get_term_size() {
 declare -a ALERT_PORTS=()      # ports flagged in the current session
 declare -a ALERT_PROTOS=()     # matching protocols (tcp/udp)
 declare -a ALERT_ADDRS=()      # matching listen addresses
+declare -a ALERT_PROCS=()      # matching process names
 LAST_SCAN_TIME="Never"
 SCAN_COUNT=0
 CLOSED_COUNT=0
@@ -235,16 +236,21 @@ draw_alerts() {
         "${C_BOLD}${C_BG_RED}${C_WHITE}" "${C_RESET}"
 
     # Table header
-    printf '  %b%-4s %-6s %-8s %-24s%b\n' \
-        "${C_BOLD}${C_YELLOW}" "#" "Proto" "Port" "Listen Addr" "${C_RESET}"
+    printf '  %b%-4s %-6s %-8s %-20s %-20s%b\n' \
+        "${C_BOLD}${C_YELLOW}" "#" "Proto" "Port" "Listen Addr" "Process" "${C_RESET}"
     draw_rule '·' "${C_YELLOW}"
 
     local i=0
     for port in "${ALERT_PORTS[@]}"; do
         local proto="${ALERT_PROTOS[$i]:-tcp}"
         local addr="${ALERT_ADDRS[$i]:-0.0.0.0}"
-        printf '  %b[%-2d] %-6s %-8s %-24s%b\n' \
-            "${C_BOLD}${C_RED}" "$((i+1))" "${proto}" "${port}" "${addr}" "${C_RESET}"
+        local proc="${ALERT_PROCS[$i]:-unknown}"
+        # Truncate process name if too long
+        if [[ ${#proc} -gt 18 ]]; then
+            proc="${proc:0:17}…"
+        fi
+        printf '  %b[%-2d] %-6s %-8s %-20s %-20s%b\n' \
+            "${C_BOLD}${C_RED}" "$((i+1))" "${proto}" "${port}" "${addr}" "${proc}" "${C_RESET}"
         (( i++ ))
     done
 
@@ -323,6 +329,54 @@ get_open_ports() {
 }
 
 # ---------------------------------------------------------------------------
+# CORE: get process information for a given port
+# Returns: "process_name (PID)" or empty string if not found
+# Uses ss -p or falls back to lsof or /proc parsing
+# ---------------------------------------------------------------------------
+get_process_for_port() {
+    local port="$1"
+    local proto="${2:-tcp}"
+    local result=""
+    
+    # Try ss with process info first
+    if command -v ss &>/dev/null; then
+        result=$(ss -tulnp 2>/dev/null | grep ":${port}[[:space:]]" | head -1 | \
+            sed -n 's/.*users:(("\([^,"]*\)",\?pid=\?\([0-9]*\).*/\1 (\2)/p')
+        [[ -n "$result" ]] && { printf '%s' "$result"; return; }
+    fi
+    
+    # Fallback to lsof
+    if command -v lsof &>/dev/null; then
+        result=$(lsof -i "${proto}:${port}" 2>/dev/null | awk 'NR==2 {print $1 " (" $2 ")"}')
+        [[ -n "$result" ]] && { printf '%s' "$result"; return; }
+    fi
+    
+    # Fallback: parse /proc/net/tcp and /proc/[pid]/fd/
+    local hex_port
+    hex_port=$(printf '%04X' "$port")
+    local inode
+    inode=$(awk -v hp=":${hex_port}" '$2 ~ hp {print $10}' /proc/net/tcp 2>/dev/null | head -1)
+    if [[ -n "$inode" && "$inode" != "0" ]]; then
+        for pid_dir in /proc/[0-9]*; do
+            if [[ -d "$pid_dir/fd" ]]; then
+                for fd in "$pid_dir"/fd/*; do
+                    if [[ "$(readlink "$fd" 2>/dev/null)" == "socket:[${inode}]" ]]; then
+                        local pid
+                        pid=$(basename "$pid_dir")
+                        local comm
+                        comm=$(cat "$pid_dir/comm" 2>/dev/null || echo "unknown")
+                        printf '%s (%s)' "$comm" "$pid"
+                        return
+                    fi
+                done
+            fi
+        done
+    fi
+    
+    printf 'unknown'
+}
+
+# ---------------------------------------------------------------------------
 # CORE: check if a port number is in the whitelist
 # ---------------------------------------------------------------------------
 is_known_port() {
@@ -342,6 +396,7 @@ do_scan() {
     ALERT_PORTS=()
     ALERT_PROTOS=()
     ALERT_ADDRS=()
+    ALERT_PROCS=()
 
     if [[ -n "${raw_ports}" ]]; then
         while IFS='|' read -r proto port addr; do
@@ -349,7 +404,10 @@ do_scan() {
                 ALERT_PORTS+=("${port}")
                 ALERT_PROTOS+=("${proto}")
                 ALERT_ADDRS+=("${addr}")
-                log "ALERT" "Unknown port detected: ${proto}/${port} on ${addr}"
+                local proc
+                proc=$(get_process_for_port "$port" "$proto")
+                ALERT_PROCS+=("${proc}")
+                log "ALERT" "Unknown port detected: ${proto}/${port} on ${addr} (${proc})"
             fi
         done <<< "${raw_ports}"
     fi
@@ -398,10 +456,11 @@ action_close_port() {
             log "ACTION" "Closed port ${proto}/${port} via iptables INPUT DROP."
             (( CLOSED_COUNT++ )) || true
             # Remove from alert list
-            unset 'ALERT_PORTS[$idx]' 'ALERT_PROTOS[$idx]' 'ALERT_ADDRS[$idx]'
+            unset 'ALERT_PORTS[$idx]' 'ALERT_PROTOS[$idx]' 'ALERT_ADDRS[$idx]' 'ALERT_PROCS[$idx]'
             ALERT_PORTS=("${ALERT_PORTS[@]}")
             ALERT_PROTOS=("${ALERT_PROTOS[@]}")
             ALERT_ADDRS=("${ALERT_ADDRS[@]}")
+            ALERT_PROCS=("${ALERT_PROCS[@]}")
         else
             STATUS_MSG="✘ iptables failed. Are you running as root?"
             log "ERROR" "iptables failed for port ${proto}/${port}."
@@ -438,10 +497,11 @@ action_add_to_whitelist() {
     log "ACTION" "Port ${port} added to whitelist by user."
 
     # Remove from alert list
-    unset 'ALERT_PORTS[$idx]' 'ALERT_PROTOS[$idx]' 'ALERT_ADDRS[$idx]'
+    unset 'ALERT_PORTS[$idx]' 'ALERT_PROTOS[$idx]' 'ALERT_ADDRS[$idx]' 'ALERT_PROCS[$idx]'
     ALERT_PORTS=("${ALERT_PORTS[@]}")
     ALERT_PROTOS=("${ALERT_PROTOS[@]}")
     ALERT_ADDRS=("${ALERT_ADDRS[@]}")
+    ALERT_PROCS=("${ALERT_PROCS[@]}")
 }
 
 # ---------------------------------------------------------------------------
@@ -468,10 +528,11 @@ action_ignore_port() {
     STATUS_MSG="Port ${port} ignored for this session."
     log "INFO" "Port ${port} ignored by user for this session."
 
-    unset 'ALERT_PORTS[$idx]' 'ALERT_PROTOS[$idx]' 'ALERT_ADDRS[$idx]'
+    unset 'ALERT_PORTS[$idx]' 'ALERT_PROTOS[$idx]' 'ALERT_ADDRS[$idx]' 'ALERT_PROCS[$idx]'
     ALERT_PORTS=("${ALERT_PORTS[@]}")
     ALERT_PROTOS=("${ALERT_PROTOS[@]}")
     ALERT_ADDRS=("${ALERT_ADDRS[@]}")
+    ALERT_PROCS=("${ALERT_PROCS[@]}")
 }
 
 # ---------------------------------------------------------------------------

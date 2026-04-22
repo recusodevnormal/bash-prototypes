@@ -339,8 +339,88 @@ view_snapshots() {
     printf '  %sTotal snapshots: %s%s%s\n' \
         "${C_DIM}" "${C_BOLD}${C_WHT}" "$count" "${C_RESET}"
     printf '\n'
-    status_bar "  Press Enter to return  |  Snapshots stored in: ${SNAP_DIR}"
+    status_bar "  [D] Diff compare  |  Press Enter to return  |  Snapshots in: ${SNAP_DIR}"
     tput cnorm 2>/dev/null || true
+    local choice
+    read -r choice
+    if [ "${choice,,}" = "d" ]; then
+        diff_snapshots
+    fi
+    tput civis 2>/dev/null || true
+}
+
+# ── Snapshot diff viewer ──────────────────────────────────────────────────────
+# Compare any two snapshots side-by-side with syntax highlighting
+diff_snapshots() {
+    clear_screen
+    update_term_size
+    banner "Compare Snapshots"
+
+    printf '\n  %sEnter two snapshot IDs to compare (oldest first):%s\n\n' \
+        "${C_BOLD}${C_CYN}" "${C_RESET}"
+
+    # List available snapshots
+    printf '  %sAvailable snapshots:%s\n' "${C_DIM}" "${C_RESET}"
+    grep -v '^ID' "$SNAP_LOG" 2>/dev/null | while IFS=$'\t' read -r id orig ts snap; do
+        printf '    %s%-20s%s %s\n' "${C_YLW}" "$id" "${C_RESET}" "$(basename "$orig")"
+    done
+    printf '\n'
+
+    tput cnorm 2>/dev/null || true
+    local snap1_id snap2_id
+    printf '  %sFirst snapshot ID:%s  ' "${C_BOLD}" "${C_RESET}"
+    read -r snap1_id
+    printf '  %sSecond snapshot ID:%s ' "${C_BOLD}" "${C_RESET}"
+    read -r snap2_id
+
+    # Find snapshot paths
+    local snap1_path snap2_path orig_file
+    snap1_path=$(awk -F'\t' -v id="$snap1_id" '$1==id {print $4}' "$SNAP_LOG" 2>/dev/null)
+    snap2_path=$(awk -F'\t' -v id="$snap2_id" '$1==id {print $4}' "$SNAP_LOG" 2>/dev/null)
+    orig_file=$(awk -F'\t' -v id="$snap1_id" '$1==id {print $2}' "$SNAP_LOG" 2>/dev/null)
+
+    if [ -z "$snap1_path" ] || [ -z "$snap2_path" ]; then
+        printf '\n  %s✘  Invalid snapshot ID(s).%s\n' "${C_RED}" "${C_RESET}"
+        sleep 2
+        tput civis 2>/dev/null || true
+        return
+    fi
+
+    if [ ! -f "$snap1_path" ] || [ ! -f "$snap2_path" ]; then
+        printf '\n  %s✘  One or both snapshot files are missing.%s\n' "${C_RED}" "${C_RESET}"
+        sleep 2
+        tput civis 2>/dev/null || true
+        return
+    fi
+
+    clear_screen
+    banner "Diff: $snap1_id → $snap2_id"
+    printf '\n  %sFile:%s %s\n\n' "${C_DIM}" "${C_RESET}" "$orig_file"
+
+    # Show diff with color highlighting
+    printf '  %s─── Diff Output ───%s\n' "${C_BOLD}${C_MAG}" "${C_RESET}"
+    printf '\n'
+    diff -u "$snap1_path" "$snap2_path" 2>/dev/null | head -100 | \
+    while IFS= read -r line; do
+        case "${line:0:1}" in
+            '+')
+                printf '  %s+%s %s\n' "${C_GRN}" "${C_RESET}" "${line:1}" ;;
+            '-')
+                if [ "${line:0:3}" = "---" ]; then
+                    printf '  %s%s%s\n' "${C_DIM}" "$line" "${C_RESET}"
+                else
+                    printf '  %s-%s %s\n' "${C_RED}" "${C_RESET}" "${line:1}"
+                fi
+                ;;
+            '@')
+                printf '  %s@%s\n' "${C_CYN}" "${line:1}${C_RESET}" ;;
+            *)
+                printf '  %s\n' "$line" ;;
+        esac
+    done
+
+    printf '\n'
+    status_bar "  Press Enter to return..."
     read -r
     tput civis 2>/dev/null || true
 }

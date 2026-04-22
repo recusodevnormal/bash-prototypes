@@ -370,22 +370,74 @@ cmd_delete() {
 
 cmd_search() {
     [ -z "${1:-}" ] && die "Usage: search <term>"
+    _term="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
     _tmp=$(mktemp)
+    _results=$(mktemp)
+    
+    # Score-based search: title matches > tag matches > content matches
     find "$NOTES_DIR" -maxdepth 1 -type f -name '*.md' | while read -r f; do
-        if grep -qi "$1" "$f"; then
-            _id=$(note_get_field "$f" "id")
-            _title=$(note_get_field "$f" "title")
-            _line=$(grep -ni "$1" "$f" | head -n 1 | cut -d':' -f2-)
-            printf "${C_CYAN}[%s]${C_RESET} ${C_BOLD}%s${C_RESET}\n" "$_id" "$_title"
-            printf "  > %s\n" "$_line"
+        _id=$(note_get_field "$f" "id")
+        _title=$(note_get_field "$f" "title")
+        _tags=$(note_get_field "$f" "tags")
+        _category=$(note_get_field "$f" "category")
+        _modified=$(note_get_field "$f" "modified")
+        
+        _score=0
+        _match_line=""
+        
+        # Title match (weight: 10)
+        _title_lower=$(echo "$_title" | tr '[:upper:]' '[:lower:]')
+        if echo "$_title_lower" | grep -qi "$_term"; then
+            _score=$((_score + 10))
+            _match_line="title: $_title"
         fi
-    done > "$_tmp"
-    if [ ! -s "$_tmp" ]; then
+        
+        # Tag match (weight: 7)
+        _tags_lower=$(echo "$_tags" | tr '[:upper:]' '[:lower:]')
+        if echo "$_tags_lower" | grep -qi "$_term"; then
+            _score=$((_score + 7))
+            [ -z "$_match_line" ] && _match_line="tag: $_tags"
+        fi
+        
+        # Category match (weight: 5)
+        _cat_lower=$(echo "$_category" | tr '[:upper:]' '[:lower:]')
+        if echo "$_cat_lower" | grep -qi "$_term"; then
+            _score=$((_score + 5))
+            [ -z "$_match_line" ] && _match_line="category: $_category"
+        fi
+        
+        # Content match (weight: 3)
+        _content=$(note_content "$f" | tr '[:upper:]' '[:lower:]')
+        if echo "$_content" | grep -qi "$_term"; then
+            _score=$((_score + 3))
+            if [ -z "$_match_line" ]; then
+                _match_line=$(grep -ni "$1" "$f" | head -n 1 | cut -d':' -f2-)
+                _match_line="content: ${_match_line:-(match in body)}"
+            fi
+        fi
+        
+        # ID match (weight: 2) - partial match OK
+        if echo "$_id" | grep -qi "$_term"; then
+            _score=$((_score + 2))
+            [ -z "$_match_line" ] && _match_line="id: $_id"
+        fi
+        
+        if [ $_score -gt 0 ]; then
+            printf "%d\t%s\t%s\t%s\t%s\n" "$_score" "$_id" "$_title" "$_modified" "$_match_line"
+        fi
+    done > "$_results"
+    
+    if [ ! -s "$_results" ]; then
         dim "No results."
     else
-        cat "$_tmp"
+        # Sort by score (descending), then show results
+        sort -t'	' -k1 -rn "$_results" | while IFS='	' read -r _score _id _title _modified _match; do
+            printf "${C_CYAN}[%s]${C_RESET} ${C_BOLD}%s${C_RESET} ${C_DIM}(%s)${C_RESET}\n" "$_id" "$_title" "$_modified"
+            printf "  ${C_GREEN}score:%s${C_RESET} %s\n" "$_score" "$_match"
+        done
     fi
-    rm -f "$_tmp"
+    
+    rm -f "$_tmp" "$_results"
 }
 
 cmd_tags() {

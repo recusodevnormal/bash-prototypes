@@ -295,6 +295,14 @@ body.theme-aurora{
       <button class="btn-ghost" id="close-settings">Close</button>
       <button class="btn-primary" id="save-settings">Save</button>
     </div>
+    <div class="settings-section" style="margin-top:20px">
+      <label>Data Management</label>
+      <div class="settings-row">
+        <button class="btn-ghost" id="export-btn" style="flex:1">Export Chat</button>
+        <button class="btn-ghost" id="import-btn" style="flex:1">Import Chat</button>
+      </div>
+      <input type="file" id="import-file" accept=".json" style="display:none">
+    </div>
     <button class="btn-danger" id="reset-btn">Reset Everything</button>
   </div>
 </div>
@@ -3152,6 +3160,63 @@ resetBtn.addEventListener('click',()=>{
     location.reload();
   }
 });
+
+// ── Export/Import functionality ─────────────────────────────────────
+const exportBtn=document.getElementById('export-btn');
+const importBtn=document.getElementById('import-btn');
+const importFile=document.getElementById('import-file');
+
+exportBtn.addEventListener('click',()=>{
+  const exportData={
+    version:3,
+    exportedAt:Date.now(),
+    state:JSON.parse(localStorage.getItem(STORE_KEY)||'{}'),
+    ai:JSON.parse(localStorage.getItem(AI_KEY)||'{}'),
+    images:_imgCache,
+    profilePic:_profilePic,
+    theme:localStorage.getItem(THEME_KEY)||'rose',
+    adaptive:JSON.parse(localStorage.getItem(ADAPTIVE_KEY)||'{}')
+  };
+  const blob=new Blob([JSON.stringify(exportData,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=`kira-backup-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  trace('export',{size:blob.size,timestamp:Date.now()});
+});
+
+importBtn.addEventListener('click',()=>importFile.click());
+
+importFile.addEventListener('change',(e)=>{
+  const file=e.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=(ev)=>{
+    try{
+      const data=JSON.parse(ev.target.result);
+      if(!data.version||data.version<3)throw new Error('Incompatible backup version');
+      if(!confirm('This will replace all current data with the imported backup. Continue?'))return;
+      if(data.state)localStorage.setItem(STORE_KEY,JSON.stringify(data.state));
+      if(data.ai)localStorage.setItem(AI_KEY,JSON.stringify(data.ai));
+      if(data.images)localStorage.setItem(IMG_KEY,JSON.stringify(data.images));
+      if(data.profilePic)localStorage.setItem(PIC_KEY,data.profilePic);
+      if(data.theme){localStorage.setItem(THEME_KEY,data.theme);applyTheme(data.theme);}
+      if(data.adaptive)localStorage.setItem(ADAPTIVE_KEY,JSON.stringify(data.adaptive));
+      trace('import',{version:data.version,timestamp:Date.now()});
+      location.reload();
+    }catch(err){
+      alert('Import failed: '+err.message);
+      trace('import_error',{error:String(err.message)},'error');
+    }
+  };
+  reader.readAsText(file);
+  importFile.value='';
+});
+
 settingsOverlay.addEventListener('click',(e)=>{if(e.target===settingsOverlay)settingsOverlay.classList.remove('open');});
 
 themeBtn.addEventListener('click',()=>{
