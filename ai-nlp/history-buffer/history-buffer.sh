@@ -30,6 +30,12 @@ fi
 # --- Configuration ---
 N=3 # Size of the circular memory buffer (remembers last 3 topics)
 
+# Validate buffer size
+if [[ ! "$N" =~ ^[0-9]+$ ]] || [[ "$N" -lt 1 ]] || [[ "$N" -gt 10 ]]; then
+    printf "Error: Buffer size N must be between 1 and 10\n" >&2
+    exit 1
+fi
+
 # --- ANSI Color Codes for Clean Terminal UI ---
 RESET="\033[0m"
 BOLD="\033[1m"
@@ -165,38 +171,42 @@ printf " Type ${GREEN}'tell me more'${RESET} to recall the last topic.\n"
 printf " Type ${YELLOW}'exit'${RESET} to quit.\n"
 printf "${CYAN}========================================${RESET}\n\n"
 
-# Main Loop
-while true; do
-    # Read user input
-    printf "${GREEN}${BOLD}> ${RESET}"
-    read -r user_input
-    
-    # Trim leading/trailing whitespace
-    user_input=$(echo "$user_input" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    
-    # Skip empty input
-    if [[ -z "$user_input" ]]; then
-        continue
-    fi
+# --- Main Loop ---
+main_loop() {
+    while true; do
+        printf "${CYAN}You${RESET}: "
+        read -r user_input
 
-    # Handle exit commands
-    if [[ "$user_input" =~ ^[eE]xit$ || "$user_input" =~ ^[qQ]uit$ || "$user_input" =~ ^[bB]ye$ ]]; then
-        printf "\n${CYAN}Goodbye! Closing context buffer.${RESET}\n"
-        break
-    fi
+        # Trim
+        user_input=$(printf '%s' "$user_input" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-    # Handle "Tell me more" continuity logic
-    if is_tell_more "$user_input"; then
-        topic=$(get_recent_topic)
-        
-        if [[ -z "$topic" ]]; then
-            printf "${YELLOW}  Bot:${RESET} I don't have anything in my memory to discuss yet.\n"
-        else
-            # Retrieve knowledge; use default if topic is known but detail is missing
-            response="${knowledge[$topic]:-${knowledge[default]}}"
-            printf "${YELLOW}  Bot:${RESET} (Recalling '${BOLD}${topic}${RESET}') ${response}\n"
+        # Exit
+        if [[ "$user_input" =~ ^(quit|exit|bye)$ ]]; then
+            printf "${GREEN}Goodbye!${RESET}\n\n"
+            break
         fi
-    else
+
+        # Skip empty
+        [[ -z "$user_input" ]] && continue
+
+        # Input length validation
+        if [[ ${#user_input} -gt 500 ]]; then
+            printf "${RED}Error: Input too long (max 500 characters)${RESET}\n\n"
+            continue
+        fi
+
+        # Special command: "tell me more"
+        if [[ "$user_input" =~ (tell me more|more about it) ]]; then
+            topic=$(get_recent_topic)
+
+            if [[ -z "$topic" ]]; then
+                printf "${YELLOW}  Bot:${RESET} I don't have anything in my memory to discuss yet.\n"
+            else
+                # Retrieve knowledge; use default if topic is known but detail is missing
+                response="${knowledge[$topic]:-${knowledge[default]}}"
+                printf "${YELLOW}  Bot:${RESET} (Recalling '${BOLD}${topic}${RESET}') ${response}\n"
+            fi
+        else
         # Standard input: Extract keyword and store in buffer
         keyword=$(extract_keyword "$user_input")
         

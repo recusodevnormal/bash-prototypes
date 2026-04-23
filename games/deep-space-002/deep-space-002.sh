@@ -37,6 +37,13 @@ artifacts=0
 cargo_max=25
 total_cargo=6
 
+# Inventory associative array for safe access
+declare -A inventory=(
+    [minerals]=4
+    [tech]=2
+    [artifacts]=0
+)
+
 log_message="Welcome, Scavenger. NSS Vanguard systems online."
 
 game_running=true
@@ -97,7 +104,7 @@ get_sell_price() {
 # ========================== DRAW DASHBOARD ==========================
 draw_dashboard() {
   clear
-  total_cargo=$((minerals + tech + artifacts))
+  total_cargo=$((inventory[minerals] + inventory[tech] + inventory[artifacts]))
 
   fuel_pct=$((fuel * 100 / max_fuel))
   fuel_bar=$(printf '█%.0s' $(seq 1 $((fuel_pct/10))); printf '░%.0s' $(seq 1 $((10 - fuel_pct/10))))
@@ -137,7 +144,7 @@ EOF
 
   cat << EOF
 ${green}╠═══════════════════════╩══════════════════════════════════════════════════════════╣${reset}
-${green}║${reset} CARGO: Min:${minerals} Tech:${tech} Art:${artifacts}  (${total_cargo}/${cargo_max})                    ${green}║${reset}
+${green}║${reset} CARGO: Min:${inventory[minerals]} Tech:${inventory[tech]} Art:${inventory[artifacts]}  (${total_cargo}/${cargo_max})                    ${green}║${reset}
 ${green}║${reset} LOG: ${log_message}                                            ${green}║${reset}
 ${green}╠══════════════════════════════════════════════════════════════════════════════════╣${reset}
 ${green}║${reset}  [${bold}N${reset}]avigate  [${bold}T${reset}]rade  [${bold}R${reset}]efuel  [${bold}Q${reset}]uit                               ${green}║${reset}
@@ -163,6 +170,12 @@ navigate_menu() {
 
   read -p "> " choice
   [[ $choice -eq 0 ]] && return
+
+  # Input validation
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 0 ] || [ "$choice" -gt "${#dests[@]}" ]; then
+    log_message="${red}Invalid selection${reset}"
+    return
+  fi
 
   local target="${dests[$((choice-1))]}"
   local cost=$(get_travel_cost "$target")
@@ -201,6 +214,11 @@ refuel_menu() {
   read -p "Units to buy (max $((max_fuel-fuel))): " amt
 
   [[ -z "$amt" || $amt -le 0 ]] && return
+  # Input validation - ensure numeric
+  if ! [[ "$amt" =~ ^[0-9]+$ ]]; then
+    log_message="${red}Invalid amount${reset}"
+    return
+  fi
   [[ $amt -gt $((max_fuel-fuel)) ]] && amt=$((max_fuel-fuel))
 
   local cost=$((amt * 9))
@@ -230,9 +248,9 @@ trade_menu() {
     tech_sell=$(get_sell_price "$current_system" 2)
     a_sell=$(get_sell_price "$current_system" 3)
 
-    echo "1. Minerals    Buy $m_buy   Sell $m_sell   Owned: $minerals"
-    echo "2. Tech        Buy $tech_buy Sell $tech_sell Owned: $tech"
-    echo "3. Artifacts   Buy $a_buy   Sell $a_sell   Owned: $artifacts"
+    echo "1. Minerals    Buy $m_buy   Sell $m_sell   Owned: ${inventory[minerals]}"
+    echo "2. Tech        Buy $tech_buy Sell $tech_sell Owned: ${inventory[tech]}"
+    echo "3. Artifacts   Buy $a_buy   Sell $a_sell   Owned: ${inventory[artifacts]}"
     echo -e "\nB1/B2/B3 = buy, S1/S2/S3 = sell, 0 = exit"
 
     read -p "> " act
@@ -242,6 +260,12 @@ trade_menu() {
     local g=${act:1:1}
     local qty=${act:2}
     [[ -z $qty ]] && qty=1
+
+    # Input validation for quantity
+    if ! [[ "$qty" =~ ^[0-9]+$ ]] || [[ "$qty" -lt 1 ]]; then
+      log_message="${red}Invalid quantity${reset}"
+      continue
+    fi
 
     case $cmd in
       b|B)
@@ -257,7 +281,7 @@ trade_menu() {
         cost=$((price * qty))
         if [[ $credits -ge $cost ]]; then
           credits=$((credits - cost))
-          eval "$item=\${$item} + qty"
+          inventory[$item]=$((${inventory[$item]} + qty))
           total_cargo=$((total_cargo + qty))
           log_message="Purchased $qty units."
         else
@@ -271,11 +295,11 @@ trade_menu() {
           3) price=$a_sell; item=artifacts ;;
           *) continue ;;
         esac
-        if eval "[[ \${$item} -lt $qty ]]"; then
+        if [[ ${inventory[$item]} -lt $qty ]]; then
           log_message="${red}Not enough cargo${reset}"; continue
         fi
         credits=$((credits + price * qty))
-        eval "$item=\${$item} - qty"
+        inventory[$item]=$((${inventory[$item]} - qty))
         total_cargo=$((total_cargo - qty))
         log_message="Sold $qty units."
         ;;
@@ -345,7 +369,7 @@ pirate_encounter() {
   else
     log_message="${green}PIRATES DESTROYED! +450 credits & 3 minerals${reset}"
     credits=$((credits + 450))
-    minerals=$((minerals + 3))
+    inventory[minerals]=$((${inventory[minerals]} + 3))
     total_cargo=$((total_cargo + 3))
   fi
 }

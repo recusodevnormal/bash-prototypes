@@ -1,8 +1,8 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # blood_and_banners.sh
 # Medieval Dark Fantasy RPG
-# Requires: sh (ash/dash/bash compatible), nothing else.
-# Tested on Alpine Linux with /bin/sh (busybox ash)
+# Requires: bash 4.0+ for associative arrays
+# Tested on Linux with bash
 
 # Check terminal support
 if [ ! -t 0 ]; then
@@ -292,8 +292,8 @@ draw_messages() {
 siege_castle() {
     _cidx=$1
     _def_name=$2
-    # Indirect variable expansion (POSIX-compatible via eval)
-    eval "_def=\$$_def_name"
+    # Indirect variable expansion using bash indirect reference
+    _def="${!_def_name}"
     
     push_message ">>> SIEGE BEGINS! Your ${TROOPS} troops charge!"
     draw_screen
@@ -667,6 +667,12 @@ try_move() {
         push_message "You cannot march beyond the known world's edge."
         return 1
     fi
+
+    # Validate coordinates are numeric
+    if ! [[ "$_new_px" =~ ^[0-9]+$ ]] || ! [[ "$_new_py" =~ ^[0-9]+$ ]]; then
+        push_message "Invalid coordinates."
+        return 1
+    fi
     
     # Terrain check
     _tidx=$(( _new_py * 5 + _new_px ))
@@ -764,6 +770,14 @@ show_help() {
 # process_input CMD
 process_input() {
     _cmd=$1
+    # Input validation
+    if [[ -z "$_cmd" ]]; then
+        push_message "Your army rests. The captains murmur."
+        turn_events
+        TURN=$(( TURN + 1 ))
+        return 0
+    fi
+
     case "$_cmd" in
         w|W) try_move  0 -1 ;;
         s|S) try_move  0  1 ;;

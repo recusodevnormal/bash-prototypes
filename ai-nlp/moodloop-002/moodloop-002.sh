@@ -127,9 +127,14 @@ count_hits() {
     local count=0
 
     # Build a single ERE pattern: (word1|word2|...) for grep
-    # Using printf + paste to join with | delimiter
+    # Using printf + paste to join with | delimiter (fallback to sed if paste unavailable)
     local pattern
-    pattern=$(printf '%s\n' "${words[@]}" | paste -sd'|' -)
+    if command -v paste >/dev/null 2>&1; then
+        pattern=$(printf '%s\n' "${words[@]}" | paste -sd'|' -)
+    else
+        # Fallback: join with | using sed
+        pattern=$(printf '%s\n' "${words[@]}" | tr '\n' '|' | sed 's/|$//')
+    fi
 
     # grep -oi: output each match on its own line, case-insensitive
     # wc -l: count those lines → number of individual hit occurrences
@@ -338,11 +343,17 @@ draw_bot_response() {
         "${PERSONA_COLOR}${PERSONA_ICON}${C_RESET}"
 
     # Word-wrap the message at 60 chars using fold (standard utility)
-    printf '%s' "$message" \
-        | fold -s -w 60 \
-        | while IFS= read -r line; do
-              printf '  %s│%s  %s\n' "$PERSONA_COLOR" "$C_RESET" "$line"
-          done
+    # Fallback to simple line breaking if fold unavailable
+    if command -v fold >/dev/null 2>&1; then
+        printf '%s' "$message" \
+            | fold -s -w 60 \
+            | while IFS= read -r line; do
+                  printf '  %s│%s  %s\n' "$PERSONA_COLOR" "$C_RESET" "$line"
+              done
+    else
+        # Simple fallback: print as-is
+        printf '  %s│%s  %s\n' "$PERSONA_COLOR" "$C_RESET" "$message"
+    fi
 
     printf '  %s└──────────────────────────────────────────%s\n\n' \
         "$PERSONA_COLOR" "$C_RESET"
@@ -477,6 +488,14 @@ main() {
 
         # ── Handle empty input ─────────────────────────────────────────────
         [[ -z "$user_input" ]] && { clear; continue; }
+
+        # ── Input length validation ────────────────────────────────────────
+        if [[ ${#user_input} -gt 1000 ]]; then
+            printf '\n  %sInput too long (max 1000 characters)%s\n' "$C_RED" "$C_RESET"
+            sleep 1
+            clear
+            continue
+        fi
 
         # ── Handle special commands ────────────────────────────────────────
         case "$user_input" in

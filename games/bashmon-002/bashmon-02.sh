@@ -721,6 +721,15 @@ draw_battle_menu() {
     done
 }
 
+# Validate menu cursor is within bounds
+validate_menu_cursor() {
+    if [[ $MENU_CURSOR -lt 0 ]]; then
+        MENU_CURSOR=$((MENU_SIZE - 1))
+    elif [[ $MENU_CURSOR -ge $MENU_SIZE ]]; then
+        MENU_CURSOR=0
+    fi
+}
+
 # --- Switch Monster Sub-Menu ------------------------------------------------
 
 draw_switch_menu() {
@@ -851,6 +860,12 @@ draw_shop() {
     while $shop_open; do
         local key
         read -rsn1 key
+        # Input validation - only accept valid options
+        case "$key" in
+            1|2|q|Q) ;;
+            *) continue ;;
+        esac
+
         case "$key" in
             1)
                 if [[ $PLAYER_MONEY -ge 20 ]]; then

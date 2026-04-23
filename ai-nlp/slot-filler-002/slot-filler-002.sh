@@ -46,7 +46,12 @@ parse_input() {
     local cleaned action object dest
 
     # Remove polite prefixes and trim
-    cleaned=$(printf '%s' "$input" | sed -E 's/^[[:space:]]*(please|can you|could you|would you|hey|ok|now)[[:space:]]+//i')
+    # Use sed -r for GNU sed compatibility, fallback to sed -E for BSD sed
+    if sed --version >/dev/null 2>&1; then
+        cleaned=$(printf '%s' "$input" | sed -r 's/^[[:space:]]*(please|can you|could you|would you|hey|ok|now)[[:space:]]+//i')
+    else
+        cleaned=$(printf '%s' "$input" | sed -E 's/^[[:space:]]*(please|can you|could you|would you|hey|ok|now)[[:space:]]+//i')
+    fi
     cleaned=$(printf '%s' "$cleaned" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
     action=""
@@ -104,6 +109,12 @@ main() {
         if [[ "$input" =~ ^(exit|quit|bye|q)$ ]]; then
             printf "\n${GREEN}Goodbye!${NC}\n\n"
             break
+        fi
+
+        # Input length validation
+        if [[ ${#input} -gt 500 ]]; then
+            printf "${RED}Error: Input too long (max 500 characters)${NC}\n\n"
+            continue
         fi
 
         # Parse the command

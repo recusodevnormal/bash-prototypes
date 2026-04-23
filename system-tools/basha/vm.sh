@@ -15,6 +15,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Signal trap for cleanup
+cleanup() {
+    echo "[vm] Cleaning up..."
+    # Add any cleanup operations here
+    exit 0
+}
+
+trap cleanup EXIT INT TERM
+
 KERNEL="$SCRIPT_DIR/vmlinuz"
 INITRAMFS="$SCRIPT_DIR/initramfs.cpio.gz"
 
@@ -52,6 +61,15 @@ elif command -v qemu-kvm >/dev/null 2>&1; then
 else
     echo "[vm] ERROR: QEMU not found. Install qemu-system-x86."
     exit 1
+fi
+
+# --- Check QEMU version supports required features ---
+QEMU_VERSION=$("$QEMU" --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
+if [[ -n "$QEMU_VERSION" ]]; then
+    QEMU_MAJOR=$(echo "$QEMU_VERSION" | cut -d. -f1)
+    if [[ "$QEMU_MAJOR" -lt 2 ]]; then
+        echo "[vm] WARNING: QEMU version $QEMU_VERSION may not support all required features"
+    fi
 fi
 
 # --- Launch ---

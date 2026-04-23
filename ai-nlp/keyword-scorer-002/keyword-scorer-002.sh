@@ -19,6 +19,12 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Check bash version for nameref support (requires 4.3+)
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]] || [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -lt 3 ]]; then
+    echo "Error: Bash 4.3 or higher required for nameref support" >&2
+    exit 1
+fi
+
 ################################################################################
 # CONFIGURATION
 ################################################################################
@@ -405,16 +411,22 @@ main() {
     while true; do
         printf "${COLOR_CYAN}> ${COLOR_RESET}"
         read -r user_input
-        
+
         # Check for exit command
         if [ "$user_input" = "quit" ] || [ "$user_input" = "exit" ] || [ "$user_input" = "q" ]; then
             echo
             print_color "$COLOR_GREEN" "Thank you for using Intent Scorer. Goodbye!"
             exit 0
         fi
-        
+
         # Skip empty input
         if [ -z "$user_input" ]; then
+            continue
+        fi
+
+        # Input length validation
+        if [ ${#user_input} -gt 1000 ]; then
+            print_color "$COLOR_RED" "Error: Input too long (max 1000 characters)"
             continue
         fi
         

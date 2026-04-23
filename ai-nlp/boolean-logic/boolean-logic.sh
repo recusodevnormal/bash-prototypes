@@ -79,6 +79,13 @@ prompt_bool() {
                 | tr '[:upper:]' '[:lower:]' \
                 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
+        # Input length validation
+        if [[ ${#input} -gt 10 ]]; then
+            printf '  %s>> Input too long.  Please answer Y or N.%s\n\n' \
+                "$RED" "$RESET"
+            continue
+        fi
+
         case "$input" in
             y|yes)  ANSWER='y'; echo; return ;;
             n|no)   ANSWER='n'; echo; return ;;

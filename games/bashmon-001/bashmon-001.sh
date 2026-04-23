@@ -432,6 +432,9 @@ battle() {
                 menu_pos=$((menu_pos + 1))
                 [ $menu_pos -gt 3 ] && menu_pos=0
                 ;;
+            1|2|3|4)
+                menu_pos=$((input - 1))
+                ;;
             " ")
                 action_taken=true
                 case $menu_pos in

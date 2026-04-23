@@ -24,6 +24,20 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Command availability checks
+check_commands() {
+    local missing=()
+    command -v ping >/dev/null 2>&1 || missing+=("ping")
+    command -v df >/dev/null 2>&1 || missing+=("df")
+    
+    if [ ${#missing[@]} -gt 0 ]; then
+        printf "Error: Missing required commands: %s\n" "${missing[*]}" >&2
+        exit 1
+    fi
+}
+
+check_commands
+
 # ------------------------------------------------------------------------------
 # UI Color Definitions (ANSI Escape Codes)
 # ------------------------------------------------------------------------------
@@ -59,6 +73,14 @@ prompt_input() {
     local prompt_text="${1:-">"}"
     printf "\n${BOLD}${GREEN}%s ${RESET}" "$prompt_text"
     read -r USER_INPUT
+
+    # Input validation - trim and check length
+    USER_INPUT=$(printf '%s' "$USER_INPUT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    if [[ ${#USER_INPUT} -gt 100 ]]; then
+        printf "\n${RED}[ERROR]${RESET} Input too long (max 100 characters)\n"
+        USER_INPUT=""
+    fi
 }
 
 # Prints a formatted system/AI message
