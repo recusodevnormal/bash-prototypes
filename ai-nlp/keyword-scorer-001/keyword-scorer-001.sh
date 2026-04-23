@@ -20,14 +20,20 @@ IFS=$'\n\t'
 # SECTION 1: GLOBAL CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Minimum total weight needed to trigger a domain personality shift
-readonly THRESHOLD=10
+# Minimum total weight needed to trigger a domain personality shift (configurable via -t)
+THRESHOLD=10
 
-# How many recent inputs to keep in session history
-readonly HISTORY_LIMIT=5
+# How many recent inputs to keep in session history (configurable via -l)
+HISTORY_LIMIT=5
+
+# Debug mode flag (configurable via -v)
+DEBUG_MODE=false
+
+# Session file path for save/load (configurable via -s)
+SESSION_FILE="$HOME/.keyword_scorer_session.txt"
 
 # Version tag shown in the header
-readonly VERSION="1.3.0"
+readonly VERSION="1.4.0"
 
 # Session history array (stores last N user inputs)
 SESSION_HISTORY=()
@@ -44,6 +50,70 @@ SESSION_SCORES=(
     [software]=0
     [general]=0
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMMAND-LINE ARGUMENT PARSING
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── print_usage ─────────────────────────────────────────────────────────────
+# Prints usage information and available options.
+print_usage() {
+    printf "%bUsage:%b %s [OPTIONS]%b\n" "$BOLD_CYAN" "$0" "$RST"
+    printf "\n"
+    printf "%bOptions:%b\n" "$BOLD_WHITE" "$RST"
+    printf "  %b-t <number>%b  Set threshold for domain shift (default: 10)\n" "$CYAN" "$RST"
+    printf "  %b-l <number>%b  Set history limit (default: 5)\n" "$CYAN" "$RST"
+    printf "  %b-v%b          Enable debug/verbose mode\n" "$CYAN" "$RST"
+    printf "  %b-s <file>%b    Set session file path (default: ~/.keyword_scorer_session.txt)\n" "$CYAN" "$RST"
+    printf "  %b-h%b          Show this help message\n" "$CYAN" "$RST"
+    printf "\n"
+    printf "%bExample:%b\n" "$BOLD_WHITE" "$RST"
+    printf "  %s -t 15 -l 10 -v%b\n" "$0" "$RST"
+}
+
+# ── parse_arguments ──────────────────────────────────────────────────────────
+# Parses command-line arguments and updates global configuration.
+parse_arguments() {
+    while getopts ":t:l:vs:h" opt; do
+        case $opt in
+            t)
+                if [[ "$OPTARG" =~ ^[0-9]+$ ]] && (( OPTARG > 0 )); then
+                    THRESHOLD="$OPTARG"
+                else
+                    printf "%b[ERROR] Threshold must be a positive integer.%b\n" "$RED" "$RST" >&2
+                    exit 1
+                fi
+                ;;
+            l)
+                if [[ "$OPTARG" =~ ^[0-9]+$ ]] && (( OPTARG > 0 )); then
+                    HISTORY_LIMIT="$OPTARG"
+                else
+                    printf "%b[ERROR] History limit must be a positive integer.%b\n" "$RED" "$RST" >&2
+                    exit 1
+                fi
+                ;;
+            v)
+                DEBUG_MODE=true
+                ;;
+            s)
+                SESSION_FILE="$OPTARG"
+                ;;
+            h)
+                print_usage
+                exit 0
+                ;;
+            \?)
+                printf "%b[ERROR] Invalid option: -%b%s%b\n" "$RED" "$BOLD_RED" "$OPTARG" "$RST" >&2
+                print_usage >&2
+                exit 1
+                ;;
+            :)
+                printf "%b[ERROR] Option -%b%s%b requires an argument.%b\n" "$RED" "$BOLD_RED" "$OPTARG" "$RST" >&2
+                exit 1
+                ;;
+        esac
+    done
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 2: ANSI COLOR & STYLE DEFINITIONS
@@ -82,58 +152,75 @@ BG_BLACK="\033[40m"
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 3: DOMAIN PERSONALITY DEFINITIONS
 #
-# Each domain defines:
+# Each domain is defined as an associative array with the following keys:
 #   COLOR       - primary ANSI color code for that personality
 #   ICON        - ASCII/Unicode symbol used in prompts
 #   LABEL       - human-readable domain name
 #   PROMPT_TAG  - the string shown in the input prompt
-#   BANNER_*    - lines printed when the domain becomes active
+#   BANNER_1    - first line printed when the domain becomes active
+#   BANNER_2    - second line printed when the domain becomes active
+#   RESPONSE_PREFIX - prefix shown in bot responses
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── NETWORKING ──────────────────────────────────────────────────────────────
-DOMAIN_networking_COLOR="$BOLD_CYAN"
-DOMAIN_networking_ICON="⇄"
-DOMAIN_networking_LABEL="Networking"
-DOMAIN_networking_PROMPT_TAG="NET"
-DOMAIN_networking_BANNER_1=" Switched to NETWORKING mode"
-DOMAIN_networking_BANNER_2=" Topics: routing, packets, protocols, subnets, DNS"
-DOMAIN_networking_RESPONSE_PREFIX="[NET-BOT]"
+declare -A DOMAIN_networking
+DOMAIN_networking=(
+    [COLOR]="$BOLD_CYAN"
+    [ICON]="⇄"
+    [LABEL]="Networking"
+    [PROMPT_TAG]="NET"
+    [BANNER_1]=" Switched to NETWORKING mode"
+    [BANNER_2]=" Topics: routing, packets, protocols, subnets, DNS"
+    [RESPONSE_PREFIX]="[NET-BOT]"
+)
 
 # ── SECURITY ────────────────────────────────────────────────────────────────
-DOMAIN_security_COLOR="$BOLD_RED"
-DOMAIN_security_ICON="⚠"
-DOMAIN_security_LABEL="Security"
-DOMAIN_security_PROMPT_TAG="SEC"
-DOMAIN_security_BANNER_1=" Switched to SECURITY mode"
-DOMAIN_security_BANNER_2=" Topics: encryption, CVEs, firewalls, auth, exploits"
-DOMAIN_security_RESPONSE_PREFIX="[SEC-BOT]"
+declare -A DOMAIN_security
+DOMAIN_security=(
+    [COLOR]="$BOLD_RED"
+    [ICON]="⚠"
+    [LABEL]="Security"
+    [PROMPT_TAG]="SEC"
+    [BANNER_1]=" Switched to SECURITY mode"
+    [BANNER_2]=" Topics: encryption, CVEs, firewalls, auth, exploits"
+    [RESPONSE_PREFIX]="[SEC-BOT]"
+)
 
 # ── HARDWARE ────────────────────────────────────────────────────────────────
-DOMAIN_hardware_COLOR="$BOLD_YELLOW"
-DOMAIN_hardware_ICON="⚙"
-DOMAIN_hardware_LABEL="Hardware"
-DOMAIN_hardware_PROMPT_TAG="HW"
-DOMAIN_hardware_BANNER_1=" Switched to HARDWARE mode"
-DOMAIN_hardware_BANNER_2=" Topics: CPU, RAM, disks, PCIe, voltage, cooling"
-DOMAIN_hardware_RESPONSE_PREFIX="[HW-BOT]"
+declare -A DOMAIN_hardware
+DOMAIN_hardware=(
+    [COLOR]="$BOLD_YELLOW"
+    [ICON]="⚙"
+    [LABEL]="Hardware"
+    [PROMPT_TAG]="HW"
+    [BANNER_1]=" Switched to HARDWARE mode"
+    [BANNER_2]=" Topics: CPU, RAM, disks, PCIe, voltage, cooling"
+    [RESPONSE_PREFIX]="[HW-BOT]"
+)
 
 # ── SOFTWARE ────────────────────────────────────────────────────────────────
-DOMAIN_software_COLOR="$BOLD_GREEN"
-DOMAIN_software_ICON="</>"
-DOMAIN_software_LABEL="Software"
-DOMAIN_software_PROMPT_TAG="SW"
-DOMAIN_software_BANNER_1=" Switched to SOFTWARE mode"
-DOMAIN_software_BANNER_2=" Topics: code, APIs, compilers, debugging, packages"
-DOMAIN_software_RESPONSE_PREFIX="[SW-BOT]"
+declare -A DOMAIN_software
+DOMAIN_software=(
+    [COLOR]="$BOLD_GREEN"
+    [ICON]="</>"
+    [LABEL]="Software"
+    [PROMPT_TAG]="SW"
+    [BANNER_1]=" Switched to SOFTWARE mode"
+    [BANNER_2]=" Topics: code, APIs, compilers, debugging, packages"
+    [RESPONSE_PREFIX]="[SW-BOT]"
+)
 
 # ── GENERAL (fallback) ───────────────────────────────────────────────────────
-DOMAIN_general_COLOR="$BOLD_WHITE"
-DOMAIN_general_ICON="?"
-DOMAIN_general_LABEL="General"
-DOMAIN_general_PROMPT_TAG="GEN"
-DOMAIN_general_BANNER_1=" General mode active"
-DOMAIN_general_BANNER_2=" No dominant domain detected yet"
-DOMAIN_general_RESPONSE_PREFIX="[BOT]"
+declare -A DOMAIN_general
+DOMAIN_general=(
+    [COLOR]="$BOLD_WHITE"
+    [ICON]="?"
+    [LABEL]="General"
+    [PROMPT_TAG]="GEN"
+    [BANNER_1]=" General mode active"
+    [BANNER_2]=" No dominant domain detected yet"
+    [RESPONSE_PREFIX]="[BOT]"
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 4: KEYWORD WEIGHT TABLES
@@ -264,15 +351,14 @@ center_text() {
 }
 
 # ── domain_var ───────────────────────────────────────────────────────────────
-# Helper: returns the value of a domain-specific variable by name.
+# Helper: returns the value of a domain-specific attribute by name.
 # Usage: domain_var <domain> <attribute>
 # Example: domain_var "networking" "COLOR"  →  prints the color code
 domain_var() {
     local domain="$1"
     local attr="$2"
-    local varname="DOMAIN_${domain}_${attr}"
-    # Use indirect expansion to read the variable
-    printf "%s" "${!varname}"
+    local -n domain_array="DOMAIN_${domain}"
+    printf "%s" "${domain_array[$attr]}"
 }
 
 # ── lowercase ────────────────────────────────────────────────────────────────
@@ -306,11 +392,23 @@ score_input() {
     local normalised
     normalised=$(lowercase "$(strip_punctuation "$input")")
 
+    # Debug: show normalised input
+    if [[ "$DEBUG_MODE" == true ]]; then
+        printf "%b[DEBUG] Original input: %b%s%b\n" "$BOLD_YELLOW" "$WHITE" "$input" "$RST"
+        printf "%b[DEBUG] Normalised: %b%s%b\n" "$BOLD_YELLOW" "$WHITE" "$normalised" "$RST"
+    fi
+
     # Declare local score counters
     local score_net=0
     local score_sec=0
     local score_hw=0
     local score_sw=0
+
+    # Debug: track matched keywords per domain
+    local -a matched_net=()
+    local -a matched_sec=()
+    local -a matched_hw=()
+    local -a matched_sw=()
 
     # Tokenise by splitting on whitespace (use read with IFS)
     local token
@@ -320,24 +418,59 @@ score_input() {
 
         # ── Networking lookup ──────────────────────────────────────────────
         if [[ -n "${NET_WEIGHTS[$token]+_}" ]]; then
-            score_net=$(( score_net + NET_WEIGHTS[$token] ))
+            local weight="${NET_WEIGHTS[$token]}"
+            score_net=$(( score_net + weight ))
+            matched_net+=("$token($weight)")
+            if [[ "$DEBUG_MODE" == true ]]; then
+                printf "%b[DEBUG] Matched networking: %b%s%b (weight: %d)%b\n" \
+                    "$BOLD_YELLOW" "$CYAN" "$token" "$CYAN" "$weight" "$RST"
+            fi
         fi
 
         # ── Security lookup ────────────────────────────────────────────────
         if [[ -n "${SEC_WEIGHTS[$token]+_}" ]]; then
-            score_sec=$(( score_sec + SEC_WEIGHTS[$token] ))
+            local weight="${SEC_WEIGHTS[$token]}"
+            score_sec=$(( score_sec + weight ))
+            matched_sec+=("$token($weight)")
+            if [[ "$DEBUG_MODE" == true ]]; then
+                printf "%b[DEBUG] Matched security: %b%s%b (weight: %d)%b\n" \
+                    "$BOLD_YELLOW" "$RED" "$token" "$RED" "$weight" "$RST"
+            fi
         fi
 
         # ── Hardware lookup ────────────────────────────────────────────────
         if [[ -n "${HW_WEIGHTS[$token]+_}" ]]; then
-            score_hw=$(( score_hw + HW_WEIGHTS[$token] ))
+            local weight="${HW_WEIGHTS[$token]}"
+            score_hw=$(( score_hw + weight ))
+            matched_hw+=("$token($weight)")
+            if [[ "$DEBUG_MODE" == true ]]; then
+                printf "%b[DEBUG] Matched hardware: %b%s%b (weight: %d)%b\n" \
+                    "$BOLD_YELLOW" "$YELLOW" "$token" "$YELLOW" "$weight" "$RST"
+            fi
         fi
 
         # ── Software lookup ────────────────────────────────────────────────
         if [[ -n "${SW_WEIGHTS[$token]+_}" ]]; then
-            score_sw=$(( score_sw + SW_WEIGHTS[$token] ))
+            local weight="${SW_WEIGHTS[$token]}"
+            score_sw=$(( score_sw + weight ))
+            matched_sw+=("$token($weight)")
+            if [[ "$DEBUG_MODE" == true ]]; then
+                printf "%b[DEBUG] Matched software: %b%s%b (weight: %d)%b\n" \
+                    "$BOLD_YELLOW" "$GREEN" "$token" "$GREEN" "$weight" "$RST"
+            fi
         fi
     done
+
+    # Debug: show matched keywords summary
+    if [[ "$DEBUG_MODE" == true ]]; then
+        printf "%b[DEBUG] Matched keywords:%b\n" "$BOLD_YELLOW" "$RST"
+        [[ ${#matched_net[@]} -gt 0 ]] && printf "%b[DEBUG]   Networking: %b%s%b\n" "$BOLD_YELLOW" "$CYAN" "${matched_net[*]}" "$RST"
+        [[ ${#matched_sec[@]} -gt 0 ]] && printf "%b[DEBUG]   Security: %b%s%b\n" "$BOLD_YELLOW" "$RED" "${matched_sec[*]}" "$RST"
+        [[ ${#matched_hw[@]} -gt 0 ]] && printf "%b[DEBUG]   Hardware: %b%s%b\n" "$BOLD_YELLOW" "$YELLOW" "${matched_hw[*]}" "$RST"
+        [[ ${#matched_sw[@]} -gt 0 ]] && printf "%b[DEBUG]   Software: %b%s%b\n" "$BOLD_YELLOW" "$GREEN" "${matched_sw[*]}" "$RST"
+        printf "%b[DEBUG] Final scores: NET=%d SEC=%d HW=%d SW=%b%d%b\n\n" \
+            "$BOLD_YELLOW" "$score_net" "$score_sec" "$score_hw" "$GREEN" "$score_sw" "$RST"
+    fi
 
     # Emit results; caller will parse and sort these
     printf "networking:%d\n" "$score_net"
@@ -644,9 +777,15 @@ draw_help_panel() {
     printf "%b│%b  %-12s - %-30s %b│%b\n" \
         "$c" "$RST" ":scores"  "Show session score totals" "$c" "$RST"
     printf "%b│%b  %-12s - %-30s %b│%b\n" \
+        "$c" "$RST" ":save"    "Save session to file"     "$c" "$RST"
+    printf "%b│%b  %-12s - %-30s %b│%b\n" \
+        "$c" "$RST" ":load"    "Load session from file"   "$c" "$RST"
+    printf "%b│%b  %-12s - %-30s %b│%b\n" \
         "$c" "$RST" ":reset"   "Reset all scores/history" "$c" "$RST"
     printf "%b│%b  %-12s - %-30s %b│%b\n" \
         "$c" "$RST" ":demo"    "Run a demo sequence"      "$c" "$RST"
+    printf "%b│%b  %-12s - %-30s %b│%b\n" \
+        "$c" "$RST" ":debug"   "Toggle debug mode"        "$c" "$RST"
     printf "%b│%b  %-12s - %-30s %b│%b\n" \
         "$c" "$RST" ":quit"    "Exit the program"         "$c" "$RST"
     printf "%b└─────────────────────────────────────────────┘%b\n\n" \
@@ -716,6 +855,80 @@ handle_demo() {
 
 # ── handle_scores ─────────────────────────────────────────────────────────────
 handle_scores() {
+    draw_session_summary
+}
+
+# ── handle_save ──────────────────────────────────────────────────────────────
+# Saves current session state (scores, history, active domain) to file.
+handle_save() {
+    local file="${1:-$SESSION_FILE}"
+
+    # Create directory if it doesn't exist
+    local dir
+    dir=$(dirname "$file")
+    if [[ ! -d "$dir" ]]; then
+        mkdir -p "$dir"
+    fi
+
+    # Write session data to file
+    {
+        printf "# Keyword Scorer Session State\n"
+        printf "# Generated: %s\n" "$(date)"
+        printf "ACTIVE_DOMAIN=%s\n" "$ACTIVE_DOMAIN"
+        printf "\n"
+        printf "# Session Scores\n"
+        for d in networking security hardware software general; do
+            printf "SESSION_SCORES[%s]=%d\n" "$d" "${SESSION_SCORES[$d]}"
+        done
+        printf "\n"
+        printf "# Session History\n"
+        printf "HISTORY_COUNT=%d\n" "${#SESSION_HISTORY[@]}"
+        for i in "${!SESSION_HISTORY[@]}"; do
+            printf "HISTORY[%d]=%s\n" "$i" "${SESSION_HISTORY[$i]}"
+        done
+    } > "$file"
+
+    printf "%b[SYSTEM] Session saved to: %b%s%b\n\n" "$BOLD_GREEN" "$CYAN" "$file" "$RST"
+}
+
+# ── handle_load ──────────────────────────────────────────────────────────────
+# Loads session state from file.
+handle_load() {
+    local file="${1:-$SESSION_FILE}"
+
+    if [[ ! -f "$file" ]]; then
+        printf "%b[ERROR] Session file not found: %b%s%b\n\n" "$RED" "$CYAN" "$file" "$RST"
+        return
+    fi
+
+    # Source the file to restore state
+    # Use a subshell to avoid polluting the global namespace
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^# ]] && continue
+        [[ -z "$key" ]] && continue
+
+        # Parse ACTIVE_DOMAIN
+        if [[ "$key" == "ACTIVE_DOMAIN" ]]; then
+            ACTIVE_DOMAIN="$value"
+        # Parse SESSION_SCORES
+        elif [[ "$key" =~ ^SESSION_SCORES\[ ]]; then
+            local domain
+            domain=$(printf "%s" "$key" | sed 's/SESSION_SCORES\[\(.*\)\].*/\1/')
+            SESSION_SCORES[$domain]="$value"
+        # Parse HISTORY_COUNT (skip, we'll rebuild array)
+        elif [[ "$key" == "HISTORY_COUNT" ]]; then
+            SESSION_HISTORY=()
+        # Parse HISTORY entries
+        elif [[ "$key" =~ ^HISTORY\[ ]]; then
+            local idx
+            idx=$(printf "%s" "$key" | sed 's/HISTORY\[\(.*\)\].*/\1/')
+            SESSION_HISTORY[$idx]="$value"
+        fi
+    done < "$file"
+
+    printf "%b[SYSTEM] Session loaded from: %b%s%b\n" "$BOLD_GREEN" "$CYAN" "$file" "$RST"
+    printf "%b[SYSTEM] Active domain: %b%s%b\n" "$BOLD_GREEN" "$CYAN" "$ACTIVE_DOMAIN" "$RST"
     draw_session_summary
 }
 
@@ -796,6 +1009,9 @@ startup() {
 
 # ── main ─────────────────────────────────────────────────────────────────────
 main() {
+    # Parse command-line arguments first
+    parse_arguments "$@"
+
     startup
 
     # Main read loop
@@ -838,6 +1054,14 @@ main() {
                 handle_scores
                 continue
                 ;;
+            :save)
+                handle_save
+                continue
+                ;;
+            :load)
+                handle_load
+                continue
+                ;;
             :reset)
                 handle_reset
                 draw_domain_banner "general"
@@ -845,6 +1069,16 @@ main() {
                 ;;
             :demo)
                 handle_demo
+                continue
+                ;;
+            :debug)
+                if [[ "$DEBUG_MODE" == true ]]; then
+                    DEBUG_MODE=false
+                    printf "%b[DEBUG] Debug mode disabled.%b\n\n" "$BOLD_YELLOW" "$RST"
+                else
+                    DEBUG_MODE=true
+                    printf "%b[DEBUG] Debug mode enabled.%b\n\n" "$BOLD_GREEN" "$RST"
+                fi
                 continue
                 ;;
             :clear)

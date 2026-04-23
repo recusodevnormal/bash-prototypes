@@ -6,25 +6,25 @@ This implementation will create a terminal-based roguelike dungeon crawler in Ba
 
 ## Tasks
 
-- [-] 1. Set up project structure and core game state
+- [x] 1. Set up project structure and core game state
   - Create directory structure for saves and game files
   - Initialize global variables for game state (player, map, enemies, inventory)
   - Set up associative arrays for player stats, skills, and equipment
   - _Requirements: 1.1, 1.4, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1, 10.1, 12.1, 13.1, 15.1, 16.1_
 
 - [ ] 2. Implement map generation and tile system
-  - [ ] 2.1 Create tile type constants and grid array
+  - [x] 2.1 Create tile type constants and grid array
     - Define TileType enum values (WALL, FLOOR, MONSTER, GOLD, POTION, KEY, DOOR, EXIT, items)
     - Initialize 16x16 grid with walls and floor tiles
     - _Requirements: 1.1, 9.1, 15.3_
   
-  - [ ] 2.2 Implement map generation algorithm
+  - [x] 2.2 Implement map generation algorithm
     - Place exit at a random position
     - Add random items (gold, potions, keys, equipment)
     - Place enemies with appropriate types
     - _Requirements: 1.3, 1.5, 2.1, 9.4, 9.5_
   
-  - [ ]* 2.3 Write property test for map generation
+  - [-]* 2.3 Write property test for map generation
     - **Property 1: Player Position Bounds**
     - **Validates: Requirements 1.2, 9.1**
     - Ensure all generated maps have valid positions

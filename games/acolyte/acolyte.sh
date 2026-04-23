@@ -87,9 +87,10 @@ DIFFICULTY_MULTIPLIERS[$DIFFICULTY_HARD]="1.25"
 DIFFICULTY_MULTIPLIERS[$DIFFICULTY_NIGHTMARE]="1.5"
 
 # ---------------------------------------------------------------------------
-# TILE TYPES
+# TILE TYPES AND RENDERING (Requirement 1.1, 9.1, 15.3)
 # ---------------------------------------------------------------------------
 
+# Tile type constants
 TILE_WALL="#"
 TILE_FLOOR="."
 TILE_MONSTER="M"
@@ -107,6 +108,75 @@ TILE_HELM="L"
 TILE_CAPE="C"
 TILE_GLOVES="V"
 TILE_MYSTERY="?"
+
+# Tile color codes for rendering
+COLOR_WALL="${RED}"
+COLOR_FLOOR="${NC}"
+COLOR_MONSTER="${CRIMSON}"
+COLOR_GOLD="${GOLD}"
+COLOR_POTION="${RED}"
+COLOR_KEY="${YELLOW}"
+COLOR_DOOR="${BLUE}"
+COLOR_EXIT="${GREEN}"
+COLOR_SWORD="${CYAN}"
+COLOR_SHIELD="${BLUE}"
+COLOR_BOOTS="${ORANGE}"
+COLOR_AMULET="${PURPLE}"
+COLOR_RING="${MAGENTA}"
+COLOR_HELM="${WHITE}"
+COLOR_CAPE="${VIOLET}"
+COLOR_GLOVES="${TEAL}"
+COLOR_MYSTERY="${LIME}"
+
+# Tile symbol lookup function
+get_tile_symbol() {
+    local tile=$1
+    case "$tile" in
+        "#") echo "$TILE_WALL" ;;
+        ".") echo "$TILE_FLOOR" ;;
+        "M") echo "$TILE_MONSTER" ;;
+        "G") echo "$TILE_GOLD" ;;
+        "H") echo "$TILE_POTION" ;;
+        "K") echo "$TILE_KEY" ;;
+        "D") echo "$TILE_DOOR" ;;
+        "E") echo "$TILE_EXIT" ;;
+        "S") echo "$TILE_SWORD" ;;
+        "P") echo "$TILE_SHIELD" ;;
+        "B") echo "$TILE_BOOTS" ;;
+        "A") echo "$TILE_AMULET" ;;
+        "R") echo "$TILE_RING" ;;
+        "L") echo "$TILE_HELM" ;;
+        "C") echo "$TILE_CAPE" ;;
+        "V") echo "$TILE_GLOVES" ;;
+        "?") echo "$TILE_MYSTERY" ;;
+        *) echo "." ;;
+    esac
+}
+
+# Tile color lookup function
+get_tile_color() {
+    local tile=$1
+    case "$tile" in
+        "#") echo "$COLOR_WALL" ;;
+        ".") echo "$COLOR_FLOOR" ;;
+        "M") echo "$COLOR_MONSTER" ;;
+        "G") echo "$COLOR_GOLD" ;;
+        "H") echo "$COLOR_POTION" ;;
+        "K") echo "$COLOR_KEY" ;;
+        "D") echo "$COLOR_DOOR" ;;
+        "E") echo "$COLOR_EXIT" ;;
+        "S") echo "$COLOR_SWORD" ;;
+        "P") echo "$COLOR_SHIELD" ;;
+        "B") echo "$COLOR_BOOTS" ;;
+        "A") echo "$COLOR_AMULET" ;;
+        "R") echo "$COLOR_RING" ;;
+        "L") echo "$COLOR_HELM" ;;
+        "C") echo "$COLOR_CAPE" ;;
+        "V") echo "$COLOR_GLOVES" ;;
+        "?") echo "$COLOR_MYSTERY" ;;
+        *) echo "$NC" ;;
+    esac
+}
 
 # ---------------------------------------------------------------------------
 # EQUIPMENT SLOTS (Requirement 5.1)
@@ -427,6 +497,199 @@ game_load() {
 }
 
 # ---------------------------------------------------------------------------
+# MAP GENERATION (Requirement 1.3, 1.5, 2.1, 9.4, 9.5)
+# ---------------------------------------------------------------------------
+
+# Generate random position within bounds (excluding walls)
+generate_random_position() {
+    local min_x=1
+    local max_x=$((MAP_WIDTH - 2))
+    local min_y=1
+    local max_y=$((MAP_HEIGHT - 2))
+    
+    local x=$((RANDOM % (max_x - min_x + 1) + min_x))
+    local y=$((RANDOM % (max_y - min_y + 1) + min_y))
+    
+    echo "$x $y"
+}
+
+# Check if position is valid for placement (not a wall, not player start, not exit)
+is_valid_position() {
+    local x=$1
+    local y=$2
+    local tile=$(get_tile $x $y)
+    
+    # Must be floor tile
+    [ "$tile" = "." ] || [ -z "$tile" ]
+}
+
+# Place exit at random position
+place_exit() {
+    local attempts=0
+    local max_attempts=100
+    
+    while [ $attempts -lt $max_attempts ]; do
+        local pos=$(generate_random_position)
+        exit_x=${pos%% *}
+        exit_y=${pos##* }
+        
+        # Ensure exit is not at player start position
+        if [ $exit_x -ne 2 ] || [ $exit_y -ne 2 ]; then
+            set_tile $exit_x $exit_y $TILE_EXIT
+            return 0
+        fi
+        
+        ((attempts++))
+    done
+    
+    # Fallback: place at default position if random placement fails
+    exit_x=14
+    exit_y=14
+    set_tile $exit_x $exit_y $TILE_EXIT
+}
+
+# Place random items on the map
+place_items() {
+    # Number of items to place based on map size
+    local num_gold=$((RANDOM % 5 + 3))      # 3-7 gold piles
+    local num_potions=$((RANDOM % 4 + 2))   # 2-5 potions
+    local num_keys=$((RANDOM % 3 + 1))      # 1-3 keys
+    local num_items=$((RANDOM % 4 + 2))     # 2-5 equipment items
+    
+    # Place gold
+    local placed=0
+    while [ $placed -lt $num_gold ]; do
+        local pos=$(generate_random_position)
+        local x=${pos%% *}
+        local y=${pos##* *}
+        
+        if is_valid_position $x $y; then
+            set_tile $x $y $TILE_GOLD
+            ((placed++))
+        fi
+    done
+    
+    # Place potions
+    placed=0
+    while [ $placed -lt $num_potions ]; do
+        local pos=$(generate_random_position)
+        local x=${pos%% *}
+        local y=${pos##* *}
+        
+        if is_valid_position $x $y; then
+            set_tile $x $y $TILE_POTION
+            ((placed++))
+        fi
+    done
+    
+    # Place keys
+    placed=0
+    while [ $placed -lt $num_keys ]; do
+        local pos=$(generate_random_position)
+        local x=${pos%% *}
+        local y=${pos##* *}
+        
+        if is_valid_position $x $y; then
+            set_tile $x $y $TILE_KEY
+            ((placed++))
+        fi
+    done
+    
+    # Place equipment items
+    local equipment_tiles=("$TILE_SWORD" "$TILE_SHIELD" "$TILE_BOOTS" "$TILE_AMULET" "$TILE_RING" "$TILE_HELM" "$TILE_CAPE" "$TILE_GLOVES")
+    placed=0
+    while [ $placed -lt $num_items ]; do
+        local pos=$(generate_random_position)
+        local x=${pos%% *}
+        local y=${pos##* *}
+        
+        if is_valid_position $x $y; then
+            # Pick random equipment type
+            local equip_idx=$((RANDOM % ${#equipment_tiles[@]}))
+            set_tile $x $y "${equipment_tiles[$equip_idx]}"
+            ((placed++))
+        fi
+    done
+}
+
+# Place enemies on the map
+place_enemies() {
+    # Clear existing enemies
+    enemies=()
+    
+    # Number of enemies based on difficulty
+    local base_enemies=5
+    local multiplier=$(get_difficulty_multiplier)
+    local num_enemies=$(( (base_enemies * 100 * multiplier) / 100 ))
+    
+    # Enemy types with rarity weights
+    # Common: skeleton, goblin, zombie (60%)
+    # Uncommon: orc, wolf (25%)
+    # Rare: demon, vampire, wraith, golem (10%)
+    # Legendary: dragon, lich, assassin, minotaur (4%)
+    # Mythic: phoenix, hydra (1%)
+    
+    local enemy_names=("skeleton" "goblin" "zombie" "orc" "wolf" "demon" "vampire" "dragon" "lich" "wraith" "golem" "assassin" "minotaur" "phoenix" "hydra")
+    
+    local placed=0
+    while [ $placed -lt $num_enemies ]; do
+        local pos=$(generate_random_position)
+        local x=${pos%% *}
+        local y=${pos##* *}
+        
+        if is_valid_position $x $y; then
+            # Pick random enemy type
+            local enemy_idx=$((RANDOM % ${#enemy_names[@]}))
+            local enemy_type="${enemy_names[$enemy_idx]}"
+            
+            # Parse enemy stats from ENEMY_TYPES
+            local enemy_data="${ENEMY_TYPES[$enemy_type]}"
+            IFS=':' read -r name base_attack base_defense base_xp base_gold special rarity <<< "$enemy_data"
+            
+            # Apply difficulty multiplier
+            local hp=$(( (base_xp * 2) ))
+            local attack=$(( (base_attack * 100 * multiplier) / 100 ))
+            local defense=$(( (base_defense * 100 * multiplier) / 100 ))
+            local xp=$(( (base_xp * 100 * multiplier) / 100 ))
+            local gold=$(( (base_gold * 100 * multiplier) / 100 ))
+            
+            # Store enemy with position as key
+            local enemy_key="${x}_${y}"
+            enemies[$enemy_key]="$name:$attack:$defense:$xp:$gold:$special:$rarity:$hp"
+            
+            set_tile $x $y $TILE_MONSTER
+            ((placed++))
+        fi
+    done
+}
+
+# Generate complete map with all elements
+generate_map() {
+    # Reset map to walls and floor
+    for ((i=0; i<MAP_HEIGHT; i++)); do
+        map_grid[$i]=""
+        for ((j=0; j<MAP_WIDTH; j++)); do
+            if [ $i -eq 0 ] || [ $i -eq $((MAP_HEIGHT-1)) ] || [ $j -eq 0 ] || [ $j -eq $((MAP_WIDTH-1)) ]; then
+                map_grid[$i]+="#"
+            else
+                map_grid[$i]+="."
+            fi
+        done
+    done
+    
+    # Place exit first
+    place_exit
+    
+    # Place items
+    place_items
+    
+    # Place enemies
+    place_enemies
+    
+    game_log="Map generated! Find the exit (E) and defeat enemies (M)."
+}
+
+# ---------------------------------------------------------------------------
 # INITIALIZATION
 # ---------------------------------------------------------------------------
 
@@ -495,6 +758,9 @@ init_game_state() {
     turn=0
     exit_x=14
     exit_y=14
+    
+    # Generate new map
+    generate_map
     
     game_log="Game initialized. Good luck, Acolyte!"
 }

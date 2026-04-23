@@ -213,6 +213,18 @@ status_wellfed=$status_wellfed
 status_turns=$status_turns
 status_hydrated=$status_hydrated
 status_energized=$status_energized
+equipped_weapon="$equipped_weapon"
+weapon_damage=$weapon_damage
+equipped_armor="$equipped_armor"
+armor_defense=$armor_defense
+equipped_tool="$equipped_tool"
+tool_bonus=$tool_bonus
+current_quest="$current_quest"
+quest_type="$quest_type"
+quest_target=$quest_target
+quest_progress=$quest_progress
+quest_reward_gold=$quest_reward_gold
+quest_reward_xp=$quest_reward_xp
 EOF
     msg="Game saved!"
 }
@@ -293,6 +305,22 @@ poison_turns=0
 
 # Crafting
 crafted_items=""
+
+# Equipment System
+equipped_weapon="none"
+weapon_damage=0
+equipped_armor="none"
+armor_defense=0
+equipped_tool="none"
+tool_bonus=0
+
+# Quest System
+current_quest=""
+quest_type=""
+quest_target=0
+quest_progress=0
+quest_reward_gold=0
+quest_reward_xp=0
 
 # --- Procedural Generation ---
 get_tile() {
@@ -384,6 +412,415 @@ update_time() {
         day=$((day + 1))
         update_weather
     fi
+}
+
+# --- Combat System ---
+combat_encounter() {
+    local monster_hp=$((RANDOM % 30 + 20))
+    local monster_max_hp=$monster_hp
+    local monster_damage=$((RANDOM % 10 + 5))
+    
+    while [ $monster_hp -gt 0 ] && [ $hp -gt 0 ]; do
+        clear_screen
+        echo -e "${RED}╔════════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║${NC} ${BOLD}${WHITE}⚔ COMBAT ENCOUNTER ⚔${NC} ${RED}                                            ║${NC}"
+        echo -e "${RED}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${RED}║${NC} ${WHITE}Monster HP:${NC} ${GREEN}$monster_hp${NC}/${WHITE}$monster_max_hp ${RED}│${NC} ${WHITE}Your HP:${NC} ${GREEN}$hp${NC}/${WHITE}$max_hp ${RED}│${NC} ${WHITE}Weapon:${NC} ${YELLOW}$equipped_weapon${NC} ${RED}║${NC}"
+        echo -e "${RED}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${RED}║${NC} ${WHITE}1) Attack${NC}    ${WHITE}2) Defend${NC}    ${WHITE}3) Flee${NC}                              ${RED}║${NC}"
+        echo -e "${RED}╚════════════════════════════════════════════════════════════════════════════╝${NC}"
+        read -p " " combat_choice
+        
+        case $combat_choice in
+            1)
+                # Attack
+                local your_damage=$((weapon_damage + RANDOM % 10 + 5))
+                monster_hp=$((monster_hp - your_damage))
+                echo -e "${WHITE}You deal $your_damage damage!${NC}"
+                sleep 0.5
+                ;;
+            2)
+                # Defend - reduce incoming damage
+                local defense_reduction=$((armor_defense + 5))
+                local incoming_damage=$((monster_damage - defense_reduction))
+                [ $incoming_damage -lt 1 ] && incoming_damage=1
+                hp=$((hp - incoming_damage))
+                echo -e "${WHITE}You defend! Monster deals only $incoming_damage damage.${NC}"
+                sleep 0.5
+                ;;
+            3)
+                # Flee
+                local flee_chance=$((30 + skill_survival * 5))
+                local flee_roll=$((RANDOM % 100))
+                if [ $flee_roll -lt $flee_chance ]; then
+                    echo -e "${GREEN}You escaped successfully!${NC}"
+                    sleep 1
+                    px=$old_px; py=$old_py
+                    return 1
+                else
+                    echo -e "${RED}Failed to flee! Monster attacks!${NC}"
+                    sleep 0.5
+                fi
+                ;;
+        esac
+        
+        # Monster attacks (if not defending)
+        if [ "$combat_choice" != "2" ] && [ $monster_hp -gt 0 ]; then
+            local incoming_damage=$((monster_damage - armor_defense))
+            [ $incoming_damage -lt 2 ] && incoming_damage=2
+            hp=$((hp - incoming_damage))
+            echo -e "${RED}Monster attacks for $incoming_damage damage!${NC}"
+            sleep 0.5
+        fi
+    done
+    
+    if [ $monster_hp -le 0 ]; then
+        echo -e "${GREEN}You defeated the monster!${NC}"
+        sleep 1
+        # Drop loot
+        local loot_roll=$((RANDOM % 100))
+        if [ $loot_roll -lt 30 ]; then
+            gold=$((gold + RANDOM % 20 + 10))
+            msg="Monster defeated! Found gold!"
+        elif [ $loot_roll -lt 50 ]; then
+            food=$((food + 1))
+            msg="Monster defeated! Found food!"
+        elif [ $loot_roll -lt 60 ]; then
+            fur=$((fur + 1))
+            msg="Monster defeated! Found fur!"
+        else
+            msg="Monster defeated!"
+        fi
+        # Quest progress
+        if [ "$quest_type" = "kill_monsters" ]; then
+            quest_progress=$((quest_progress + 1))
+            if [ $quest_progress -ge $quest_target ]; then
+                gold=$((gold + quest_reward_gold))
+                skill_points=$((skill_points + 1))
+                current_quest=""
+                msg="Quest complete! +$quest_reward_gold gold, +1 SP"
+            fi
+        fi
+        return 0
+    else
+        msg="You were defeated by the monster..."
+        return 1
+    fi
+}
+
+# --- Equipment Functions ---
+show_equipment_menu() {
+    clear_screen
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║${NC} ${BOLD}${YELLOW}⚔ EQUIPMENT & CRAFTING ⚔${NC} ${CYAN}                                       ║${NC}"
+    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}Equipped:${NC} ${YELLOW}Weapon:$equipped_weapon${NC} (+$weapon_damage dmg) ${CYAN}│${NC} ${WHITE}Armor:$equipped_armor${NC} (+$armor_defense def) ${CYAN}║${NC}"
+    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}Craft Weapons:${NC}                                                   ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}1) Stone Club (3 wood, +5 dmg)${NC}                                 ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}2) Iron Sword (5 wood, 2 fur, +12 dmg)${NC}                        ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}3) Ice Axe (7 wood, 3 fur, +18 dmg)${NC}                           ${CYAN}║${NC}"
+    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}Craft Armor:${NC}                                                    ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}4) Leather Armor (4 fur, +3 def)${NC}                              ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}5) Fur Coat (6 fur, +6 def)${NC}                                   ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}6) Ice Armor (8 fur, 2 wood, +10 def)${NC}                          ${CYAN}║${NC}"
+    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}Craft Tools:${NC}                                                    ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}7) Hunting Knife (2 wood, +10% meat from kills)${NC}               ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}8) Pickaxe (4 wood, +20% gold from caves)${NC}                     ${CYAN}║${NC}"
+    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}q) Back${NC}                                                       ${CYAN}║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════════════════╝${NC}"
+    read -p " " equip_choice
+    
+    case $equip_choice in
+        1)
+            if [ $wood -ge 3 ]; then
+                wood=$((wood - 3))
+                equipped_weapon="Stone Club"
+                weapon_damage=5
+                msg="Crafted Stone Club! +5 damage."
+            else
+                msg="Not enough wood! Need 3."
+            fi
+            ;;
+        2)
+            if [ $wood -ge 5 ] && [ $fur -ge 2 ]; then
+                wood=$((wood - 5))
+                fur=$((fur - 2))
+                equipped_weapon="Iron Sword"
+                weapon_damage=12
+                msg="Crafted Iron Sword! +12 damage."
+            else
+                msg="Not enough materials! Need 5 wood, 2 fur."
+            fi
+            ;;
+        3)
+            if [ $wood -ge 7 ] && [ $fur -ge 3 ]; then
+                wood=$((wood - 7))
+                fur=$((fur - 3))
+                equipped_weapon="Ice Axe"
+                weapon_damage=18
+                msg="Crafted Ice Axe! +18 damage."
+            else
+                msg="Not enough materials! Need 7 wood, 3 fur."
+            fi
+            ;;
+        4)
+            if [ $fur -ge 4 ]; then
+                fur=$((fur - 4))
+                equipped_armor="Leather Armor"
+                armor_defense=3
+                msg="Crafted Leather Armor! +3 defense."
+            else
+                msg="Not enough fur! Need 4."
+            fi
+            ;;
+        5)
+            if [ $fur -ge 6 ]; then
+                fur=$((fur - 6))
+                equipped_armor="Fur Coat"
+                armor_defense=6
+                msg="Crafted Fur Coat! +6 defense."
+            else
+                msg="Not enough fur! Need 6."
+            fi
+            ;;
+        6)
+            if [ $fur -ge 8 ] && [ $wood -ge 2 ]; then
+                fur=$((fur - 8))
+                wood=$((wood - 2))
+                equipped_armor="Ice Armor"
+                armor_defense=10
+                msg="Crafted Ice Armor! +10 defense."
+            else
+                msg="Not enough materials! Need 8 fur, 2 wood."
+            fi
+            ;;
+        7)
+            if [ $wood -ge 2 ]; then
+                wood=$((wood - 2))
+                equipped_tool="Hunting Knife"
+                skill_hunting=$((skill_hunting + 2))
+                msg="Crafted Hunting Knife! +2 hunting skill."
+            else
+                msg="Not enough wood! Need 2."
+            fi
+            ;;
+        8)
+            if [ $wood -ge 4 ]; then
+                wood=$((wood - 4))
+                equipped_tool="Pickaxe"
+                msg="Crafted Pickaxe! Better cave loot!"
+            else
+                msg="Not enough wood! Need 4."
+            fi
+            ;;
+        *)
+            msg="Back to inventory..."
+            ;;
+    esac
+}
+
+# --- Quest System ---
+generate_quest() {
+    if [ -z "$current_quest" ]; then
+        local quest_roll=$((RANDOM % 5))
+        case $quest_roll in
+            0)
+                current_quest="Collect Gold"
+                quest_type="collect_gold"
+                quest_target=$((RANDOM % 50 + 30))
+                quest_progress=$gold
+                quest_reward_gold=$((quest_target / 2))
+                quest_reward_xp=1
+                ;;
+            1)
+                current_quest="Survive Days"
+                quest_type="survive_days"
+                quest_target=$((RANDOM % 5 + 3))
+                quest_progress=$day
+                quest_reward_gold=50
+                quest_reward_xp=2
+                ;;
+            2)
+                current_quest="Kill Monsters"
+                quest_type="kill_monsters"
+                quest_target=$((RANDOM % 5 + 3))
+                quest_progress=0
+                quest_reward_gold=40
+                quest_reward_xp=1
+                ;;
+            3)
+                current_quest="Gather Resources"
+                quest_type="gather_resources"
+                quest_target=$((RANDOM % 20 + 10))
+                quest_progress=$((wood + food))
+                quest_reward_gold=30
+                quest_reward_xp=1
+                ;;
+            4)
+                current_quest="Travel Distance"
+                quest_type="travel_distance"
+                quest_target=$((RANDOM % 200 + 100))
+                quest_progress=$total_distance
+                quest_reward_gold=35
+                quest_reward_xp=1
+                ;;
+        esac
+        msg="New Quest: $current_quest"
+    fi
+}
+
+update_quest_progress() {
+    if [ -n "$current_quest" ]; then
+        case "$quest_type" in
+            collect_gold)
+                quest_progress=$gold
+                ;;
+            survive_days)
+                quest_progress=$day
+                ;;
+            gather_resources)
+                quest_progress=$((wood + food))
+                ;;
+            travel_distance)
+                quest_progress=$total_distance
+                ;;
+        esac
+        
+        if [ $quest_progress -ge $quest_target ]; then
+            gold=$((gold + quest_reward_gold))
+            skill_points=$((skill_points + quest_reward_xp))
+            msg="Quest Complete: $current_quest! +$quest_reward_gold gold, +$quest_reward_xp SP"
+            current_quest=""
+            quest_type=""
+            quest_target=0
+            quest_progress=0
+        fi
+    fi
+}
+
+# --- Town Trading System ---
+show_trading_menu() {
+    while true; do
+        clear_screen
+        echo -e "${CYAN}╔════════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║${NC} ${BOLD}${YELLOW}🏪 TOWN TRADING POST 🏪${NC} ${CYAN}                                        ║${NC}"
+        echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}Your Gold:${NC} ${YELLOW}$gold${NC} ${CYAN}│${NC} ${WHITE}Wood:$wood${NC} ${CYAN}│${NC} ${WHITE}Food:$food${NC} ${CYAN}│${NC} ${WHITE}Fur:$fur${NC} ${CYAN}│${NC} ${WHITE}Herbs:$herbs${NC} ${CYAN}║${NC}"
+        echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}Buy:${NC}                                                           ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}1) Food (15g)${NC}    ${WHITE}2) Wood (10g)${NC}    ${WHITE}3) Herbs (20g)${NC}              ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}4) Torch (25g)${NC}    ${WHITE}5) Fur (30g)${NC}                                   ${CYAN}║${NC}"
+        echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}Sell:${NC}                                                          ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}6) Sell Wood (5g)${NC}  ${WHITE}7) Sell Food (8g)${NC}  ${WHITE}8) Sell Fur (15g)${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}9) Sell Herbs (12g)${NC}                                             ${CYAN}║${NC}"
+        echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}r) Rest (Free - restores HP, hunger, warmth)${NC}                    ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC} ${WHITE}q) Leave Town${NC}                                                  ${CYAN}║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════════════════════════════════════════╝${NC}"
+        read -p " " trade_choice
+        
+        case $trade_choice in
+            1)
+                if [ $gold -ge 15 ]; then
+                    gold=$((gold - 15))
+                    food=$((food + 1))
+                    msg="Bought food for 15 gold."
+                else
+                    msg="Not enough gold!"
+                fi
+                ;;
+            2)
+                if [ $gold -ge 10 ]; then
+                    gold=$((gold - 10))
+                    wood=$((wood + 1))
+                    msg="Bought wood for 10 gold."
+                else
+                    msg="Not enough gold!"
+                fi
+                ;;
+            3)
+                if [ $gold -ge 20 ]; then
+                    gold=$((gold - 20))
+                    herbs=$((herbs + 1))
+                    msg="Bought herbs for 20 gold."
+                else
+                    msg="Not enough gold!"
+                fi
+                ;;
+            4)
+                if [ $gold -ge 25 ]; then
+                    gold=$((gold - 25))
+                    torches=$((torches + 1))
+                    msg="Bought torch for 25 gold."
+                else
+                    msg="Not enough gold!"
+                fi
+                ;;
+            5)
+                if [ $gold -ge 30 ]; then
+                    gold=$((gold - 30))
+                    fur=$((fur + 1))
+                    msg="Bought fur for 30 gold."
+                else
+                    msg="Not enough gold!"
+                fi
+                ;;
+            6)
+                if [ $wood -gt 0 ]; then
+                    wood=$((wood - 1))
+                    gold=$((gold + 5))
+                    msg="Sold wood for 5 gold."
+                else
+                    msg="No wood to sell!"
+                fi
+                ;;
+            7)
+                if [ $food -gt 0 ]; then
+                    food=$((food - 1))
+                    gold=$((gold + 8))
+                    msg="Sold food for 8 gold."
+                else
+                    msg="No food to sell!"
+                fi
+                ;;
+            8)
+                if [ $fur -gt 0 ]; then
+                    fur=$((fur - 1))
+                    gold=$((gold + 15))
+                    msg="Sold fur for 15 gold."
+                else
+                    msg="No fur to sell!"
+                fi
+                ;;
+            9)
+                if [ $herbs -gt 0 ]; then
+                    herbs=$((herbs - 1))
+                    gold=$((gold + 12))
+                    msg="Sold herbs for 12 gold."
+                else
+                    msg="No herbs to sell!"
+                fi
+                ;;
+            r)
+                hp=$max_hp
+                hunger=$max_hunger
+                warmth=$max_warmth
+                msg="Rested at town. Fully recovered!"
+                ;;
+            q)
+                msg="Left town."
+                break
+                ;;
+            *)
+                msg="Invalid choice."
+                ;;
+        esac
+    done
 }
 
 # --- Survival Mechanics ---
@@ -509,6 +946,21 @@ draw_ui() {
     echo -e "${CYAN}║${NC} ${YELLOW}🍖 Hunger:${NC} $([ $starving = true ] && echo -e "${RED}$hunger${NC}" || echo -e "${GREEN}$hunger${NC}") ${CYAN}│${NC} ${BLUE}🌡 Warmth:${NC} $([ $freezing = true ] && echo -e "${RED}$warmth${NC}" || echo -e "${GREEN}$warmth${NC}") ${CYAN}│${NC} ${LIME}SP:${WHITE}$skill_points ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC} ${time_color}${time_icon} Day $day - $time_str${NC} ${CYAN}$(printf '%.0s ' $(seq 1 $((25 - ${#time_str}))))${CYAN}│${NC} ${weather_color}${weather_icon} ${weather}${NC} ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC} ${YELLOW}🪙 Gold:${NC} ${WHITE}$gold${NC} ${CYAN}│${NC} ${GREEN}📍 X:$px Y:$py${NC} ${CYAN}│${NC} ${MAGENTA}⭐ Score:$score${NC} ${CYAN}│${NC} ${ORANGE}Dist:${WHITE}$total_distance ${CYAN}║${NC}"
+    
+    # Equipment display
+    local equip_line=""
+    [ "$equipped_weapon" != "none" ] && equip_line="${equip_line}${YELLOW}⚔${equipped_weapon}${NC} "
+    [ "$equipped_armor" != "none" ] && equip_line="${equip_line}${BLUE}🛡${equipped_armor}${NC} "
+    echo -e "${CYAN}║${NC} ${WHITE}Equip:${NC} ${equip_line}${CYAN}$(printf '%.0s ' $(seq 1 $((60 - ${#equip_line} - 8))))${CYAN}║${NC}"
+    
+    # Quest display
+    if [ -n "$current_quest" ]; then
+        local quest_info="${MAGENTA}Quest:${WHITE} $current_quest ($quest_progress/$quest_target)${NC}"
+        echo -e "${CYAN}║${NC} $quest_info ${CYAN}$(printf '%.0s ' $(seq 1 $((60 - ${#quest_info} - 4))))${CYAN}║${NC}"
+    else
+        echo -e "${CYAN}║${NC} ${WHITE}No active quest${NC} ${CYAN}$(printf '%.0s ' $(seq 1 $((60 - 16))))${CYAN}║${NC}"
+    fi
+    
     echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
     
     # Status effects
@@ -603,6 +1055,8 @@ show_inventory() {
     echo -e "${CYAN}║${NC} ${WHITE}c) 🪣 Water canteen (2 wood, +hydration)${NC}                         ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC} ${WHITE}d) 🏕️ Shelter (5 wood, +20 HP, -5 hunger)${NC}                      ${CYAN}║${NC}"
     echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC} ${WHITE}e) ⚔ Equipment Crafting (weapons, armor, tools)${NC}               ${CYAN}║${NC}"
+    echo -e "${CYAN}╠════════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${NC} ${WHITE}Game:${NC} s) Save  l) Load  h) Help  q) Close                    ${CYAN}║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════════════════╝${NC}"
     
@@ -668,6 +1122,36 @@ show_inventory() {
             fi
             ;;
         7)
+            if [ $wood -ge 2 ]; then
+                wood=$((wood - 2))
+                warmth=$max_warmth
+                msg="Campfire made! Warmth restored."
+            else
+                msg="Not enough wood! Need 2."
+            fi
+            ;;
+        8)
+            if [ $food -gt 0 ]; then
+                food=$((food - 1))
+                hunger=$max_hunger
+                msg="Ate food! Hunger restored."
+            else
+                msg="No food left!"
+            fi
+            ;;
+        9)
+            if [ $wood -gt 0 ] && [ $hp -lt $max_hp ]; then
+                wood=$((wood - 1))
+                hp=$((hp + 10))
+                [ $hp -gt $max_hp ] && hp=$max_hp
+                msg="Rested by fire. Healed 10 HP."
+            elif [ $wood -le 0 ]; then
+                msg="Need wood to make a fire for resting!"
+            else
+                msg="HP already full!"
+            fi
+            ;;
+        0)
             if [ $fur -ge 3 ] && [[ ! "$crafted_items" =~ "fur_coat" ]]; then
                 fur=$((fur - 3))
                 crafted_items="${crafted_items} fur_coat"
@@ -678,7 +1162,7 @@ show_inventory() {
                 msg="Not enough fur! Need 3."
             fi
             ;;
-        8)
+        a)
             if [ $herbs -gt 0 ]; then
                 herbs=$((herbs - 1))
                 poisoned=false
@@ -690,7 +1174,7 @@ show_inventory() {
                 msg="No herbs left!"
             fi
             ;;
-        9)
+        b)
             if [ $wood -ge 5 ]; then
                 wood=$((wood - 5))
                 hp=$((hp + 20))
@@ -703,6 +1187,26 @@ show_inventory() {
             else
                 msg="Not enough wood! Need 5."
             fi
+            ;;
+        c)
+            msg="Water canteen crafted! (placeholder)"
+            ;;
+        d)
+            if [ $wood -ge 5 ]; then
+                wood=$((wood - 5))
+                hp=$((hp + 20))
+                [ $hp -gt $max_hp ] && hp=$max_hp
+                hunger=$((hunger + 15))
+                [ $hunger -gt $max_hunger ] && hunger=$max_hunger
+                status_wellfed=true
+                status_turns=3
+                msg="Built shelter! Healed 20 HP, +15 hunger."
+            else
+                msg="Not enough wood! Need 5."
+            fi
+            ;;
+        e)
+            show_equipment_menu
             ;;
         s)
             game_save
@@ -891,6 +1395,9 @@ trap 'show_cursor; clear_screen; exit' INT TERM
 
 show_intro
 
+# Generate initial quest
+generate_quest
+
 while true; do
     draw_ui
     
@@ -919,21 +1426,8 @@ while true; do
     
     case "$current_tile" in
         M)
-            # Monster encounter
-            local dmg_bonus=$((skill_survival * 2))
-            if [ $time_of_day -ge 20 ] || [ $time_of_day -lt 6 ]; then
-                dmg=$((RANDOM % 15 + 10 - dmg_bonus))
-                [ $dmg -lt 3 ] && dmg=3
-                hp=$((hp - dmg))
-                msg="${RED}Night beast attacks! -$dmg HP${NC}"
-                screen_shake
-            else
-                dmg=$((RANDOM % 10 + 5 - dmg_bonus))
-                [ $dmg -lt 2 ] && dmg=2
-                hp=$((hp - dmg))
-                msg="Wild beast attacks! -$dmg HP"
-                screen_shake
-            fi
+            # Monster encounter - use combat system
+            combat_encounter
             ;;
         G)
             gold_amt=$((RANDOM % 30 + 20))
@@ -942,15 +1436,7 @@ while true; do
             ;;
         T)
             # Town - rest and trade
-            hp=$max_hp
-            hunger=$max_hunger
-            warmth=$max_warmth
-            local trade=$((RANDOM % 3))
-            case $trade in
-                0) food=$((food + 2)); msg="Town visit: +2 food, fully rested" ;;
-                1) wood=$((wood + 3)); msg="Town visit: +3 wood, fully rested" ;;
-                2) gold=$((gold + 25)); msg="Town visit: +25 gold, fully rested" ;;
-            esac
+            show_trading_menu
             ;;
         C)
             # Cave - shelter but dangerous
@@ -1005,6 +1491,14 @@ while true; do
             msg="Trekking through the tundra..."
             ;;
     esac
+    
+    # Update quest progress
+    update_quest_progress
+    
+    # Generate new quest if none active
+    if [ -z "$current_quest" ]; then
+        generate_quest
+    fi
     
     # Random events
     if [ $((turn % 10)) -eq 0 ]; then
