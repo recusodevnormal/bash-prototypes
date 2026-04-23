@@ -323,23 +323,6 @@ score_input() {
             score_net=$(( score_net + NET_WEIGHTS[$token] ))
         fi
 
-        # ── Prompt the user ────────────────────────────────────────────────
-        printf '%s%s%s › %s' \
-            "$CURRENT_DOMAIN_COLOR" "$BOLD" "$CURRENT_DOMAIN_ICON" "$CURRENT_DOMAIN_COLOR"
-        IFS= read -r user_input
-        printf '%s' "$RESET"
-
-        # ── Handle empty input ─────────────────────────────────────────────
-        [[ -z "$user_input" ]] && { clear; continue; }
-
-        # ── Input length validation ────────────────────────────────────────
-        if [[ ${#user_input} -gt 1000 ]]; then
-            printf '\n%sInput too long (max 1000 characters)%s\n\n' "$RED" "$RESET"
-            sleep 1
-            clear
-            continue
-        fi
-
         # ── Security lookup ────────────────────────────────────────────────
         if [[ -n "${SEC_WEIGHTS[$token]+_}" ]]; then
             score_sec=$(( score_sec + SEC_WEIGHTS[$token] ))
@@ -826,6 +809,13 @@ main() {
             printf "\n%b[SYSTEM] EOF received. Goodbye!%b\n" \
                 "$BOLD_YELLOW" "$RST"
             exit 0
+        fi
+
+        # Input length validation
+        if [[ ${#user_input} -gt 1000 ]]; then
+            printf "\n%b[ERROR] Input too long (max 1000 characters)%b\n\n" \
+                "$RED" "$RST"
+            continue
         fi
 
         # ── Built-in command dispatcher ───────────────────────────────────
